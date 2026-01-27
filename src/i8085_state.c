@@ -7,25 +7,23 @@
 #include <string.h>
 
 #include "i8085_cpu.h"
-State8085 *Init8085(void)
-{
-	State8085 *state = calloc(1, sizeof(State8085));
+State8085 *Init8085(void) {
+    State8085 *state = calloc(1, sizeof(State8085));
     if (!state) {
         return NULL;
     }
-	state->memory = calloc(1, 0x10000); // 64K
-	state->io = calloc(1, 0x100);
+    state->memory = calloc(1, 0x10000); // 64K
+    state->io = calloc(1, 0x100);
     if (!state->memory || !state->io) {
         free(state->memory);
         free(state->io);
         free(state);
         return NULL;
     }
-	return state;
+    return state;
 }
 
-void Free8085(State8085 *state)
-{
+void Free8085(State8085 *state) {
     if (!state) {
         return;
     }
@@ -34,8 +32,7 @@ void Free8085(State8085 *state)
     free(state);
 }
 
-void Reset8085(State8085 *state, UINT16 pc, UINT16 sp)
-{
+void Reset8085(State8085 *state, UINT16 pc, UINT16 sp) {
     if (!state) {
         return;
     }
@@ -48,39 +45,40 @@ void Reset8085(State8085 *state, UINT16 pc, UINT16 sp)
     state->sp = sp;
 }
 
-UINT8 *getMemory(State8085 *state) { return state->memory; }
-UINT8 *getIO(State8085 *state) { return state->io; }
+UINT8 *getMemory(State8085 *state) {
+    return state->memory;
+}
+UINT8 *getIO(State8085 *state) {
+    return state->io;
+}
 
-void setSIDLine(State8085 *state, int level)
-{
+void setSIDLine(State8085 *state, int level) {
     state->sid_line = (level != 0);
 }
 
-int getSODLine(State8085 *state)
-{
+int getSODLine(State8085 *state) {
     return state->sod_line ? 1 : 0;
 }
 
-int triggerInterrupt(State8085 *state, int code, int active)
-{
+int triggerInterrupt(State8085 *state, int code, int active) {
     switch (code) {
-        case 45:
-            state->pending_trap = active;
-            break;
-        case 55:
-            state->pending_r5 = active;
-            break;
-        case 65:
-            state->pending_r6 = active;
-            break;
-        case 75:
-            if (active == 1) {
-                state->r7_latch = 1; // only on rising edge
-            }
-            break;
-        default:
-            fprintf(stderr, "Unknown interrupt code: %d\n", code);
-            break;
+    case 45:
+        state->pending_trap = active;
+        break;
+    case 55:
+        state->pending_r5 = active;
+        break;
+    case 65:
+        state->pending_r6 = active;
+        break;
+    case 75:
+        if (active == 1) {
+            state->r7_latch = 1; // only on rising edge
+        }
+        break;
+    default:
+        fprintf(stderr, "Unknown interrupt code: %d\n", code);
+        break;
     }
     return state->int_enable;
 }
