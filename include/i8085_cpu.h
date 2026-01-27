@@ -31,8 +31,10 @@ typedef struct State8085 {
     UINT16 pc;
     Flags cc;
     UINT8 int_enable;
+    UINT8 int_enable_delay;
     UINT8 r5_mask, r6_mask, r7_mask;
     UINT8 pending_trap, pending_r5, pending_r6, r7_latch;
+    UINT8 sid_line;
     UINT8 sod_line;
     UINT8 hlt_enable;
     UINT8 *memory;
@@ -52,7 +54,7 @@ void Free8085(State8085 *state);
 void Reset8085(State8085 *state, UINT16 pc, UINT16 sp);
 
 // Step one instruction. Returns 1 on HLT, 0 otherwise.
-int Emulate8085Op(State8085 *state, UINT16 offset, ExecutionStats8085 *stats);
+int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats);
 
 // Disassemble instruction at pc into out buffer. Returns instruction length.
 int Disassemble8085Op(const UINT8 *codebuffer, int pc, char *out, size_t out_len);
@@ -63,6 +65,10 @@ UINT8 *getIO(State8085 *state);
 
 // Interrupt trigger
 int triggerInterrupt(State8085 *state, int code, int active);
+
+// Serial input/output lines
+void setSIDLine(State8085 *state, int level);
+int getSODLine(State8085 *state);
 
 // Optional I/O hook for OUT instruction
 void io_write(int address, int value);

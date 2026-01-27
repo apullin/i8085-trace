@@ -672,7 +672,7 @@ int main(int argc, char* argv[])
         }
         lastPC = pc;
 
-        halted = Emulate8085Op(state, 0xFFFF, &stats);
+        halted = Emulate8085Op(state, &stats);
         if (halted)
         {
             haltReason = "hlt";

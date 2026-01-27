@@ -9,6 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_executable(i8085-trace
     src/main.cpp
     src/8085_core.c
+    src/i8085_disasm.c
 )
 
 target_include_directories(i8085-trace PRIVATE include)

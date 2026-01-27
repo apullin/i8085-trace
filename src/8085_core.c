@@ -3,7 +3,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
-#include <stdarg.h>
 
 #include "i8085_cpu.h"
 
@@ -18,63 +17,6 @@
 #else
 #define TRACE_PRINTF(...) do {} while (0)
 #endif
-
-#ifndef EMSCRIPTEN_KEEPALIVE
-#define EMSCRIPTEN_KEEPALIVE
-#endif
-
-#ifndef I8085_TRACE_EMSCRIPTEN
-static inline void emscripten_sleep(int ms) { (void)ms; }
-#endif
-
-#if I8085_TRACE_EMSCRIPTEN
-typedef struct {
-    bool timing_enabled;
-    float clock_frequency_hz;
-} SimulatorOptions;
-
-SimulatorOptions sim_options = {
-    .timing_enabled = false,
-    .clock_frequency_hz = 3072000.0f, // default 3.072 MHz
-};
-
-EMSCRIPTEN_KEEPALIVE
-void set_timing_enabled(int enabled) {
-    sim_options.timing_enabled = (enabled != 0);
-}
-
-EMSCRIPTEN_KEEPALIVE
-void set_clock_frequency(float hz) {
-    if (hz > 0.0f) {
-        sim_options.clock_frequency_hz = hz;
-    }
-}
-
-EMSCRIPTEN_KEEPALIVE
-int get_timing_enabled() {
-    return sim_options.timing_enabled ? 1 : 0;
-}
-
-EMSCRIPTEN_KEEPALIVE
-void delay_ms(int ms) {
-    emscripten_sleep(ms);
-}
-#endif
-
-static uint64_t last_total_tstates = 0;
-static uint16_t last_min_sp = 0xFFFF;
-static uint16_t last_start_sp = 0xFFFF;
-
-EMSCRIPTEN_KEEPALIVE
-uint64_t get_last_total_tstates() {
-    return last_total_tstates;
-}
-
-EMSCRIPTEN_KEEPALIVE
-uint32_t get_last_max_stack_bytes() {
-    return last_start_sp >= last_min_sp ? (uint32_t)(last_start_sp - last_min_sp) : 0;
-}
-
 
 int parity(int x, int size)
 {
@@ -168,7 +110,7 @@ uint8_t subtractByteWithBorrow(State8085 *state, uint8_t lhs, uint8_t rhs, shoul
 	return (uint8_t)res;
 }
 
-void call(State8085 *state, uint16_t offset, uint16_t addr)
+void call(State8085 *state, uint16_t addr)
 {
 	uint16_t pc = state->pc + 2;
 	state->memory[state->sp - 1] = (pc >> 8) & 0xff;
@@ -177,7 +119,7 @@ void call(State8085 *state, uint16_t offset, uint16_t addr)
 	state->pc = addr;
 }
 
-void returnToCaller(State8085 *state, uint16_t offset)
+void returnToCaller(State8085 *state)
 {
 	state->pc = (state->memory[state->sp] | (state->memory[state->sp + 1] << 8));
 	state->sp += 2;
@@ -194,9 +136,6 @@ void rst(State8085 *state, uint8_t rst_number, uint8_t half)
 
 void checkInterrupts(State8085 *state)
 {
-    if (state->int_enable == 0)
-        return;
-
     // Highest priority first
     if (state->pending_trap) {
         state->pending_trap = 0;
@@ -204,6 +143,9 @@ void checkInterrupts(State8085 *state)
         rst(state, 4, 1); // RST 4.5 = 0x24
         return;
     }
+
+    if (state->int_enable == 0)
+        return;
 
     if (state->r7_latch && !state->r7_mask) {
         state->r7_latch = 0;
@@ -213,12 +155,14 @@ void checkInterrupts(State8085 *state)
     }
 
     if (state->pending_r6 && !state->r6_mask) {
+        state->pending_r6 = 0;
         state->int_enable = 0;
         rst(state, 6, 1); // RST 6.5 = 0x34
         return;
     }
 
     if (state->pending_r5 && !state->r5_mask) {
+        state->pending_r5 = 0;
         state->int_enable = 0;
         rst(state, 5, 1); // RST 5.5 = 0x2C
         return;
@@ -227,12 +171,8 @@ void checkInterrupts(State8085 *state)
 
 extern void io_write(int address, int value);
 
-int Emulate8085Op(State8085 *state, uint16_t offset, ExecutionStats8085 *stats)
+int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats)
 {
-	if (offset == state->pc) {
-		state->sp = 0xFFFF;
-    }
-
     checkInterrupts(state);
 
     unsigned char *opcode = &state->memory[state->pc];
@@ -425,13 +365,14 @@ int Emulate8085Op(State8085 *state, uint16_t offset, ExecutionStats8085 *stats)
     {
         uint8_t result = 0;
 
-        result |= (state->int_enable ? 1 : 0) << 7;
-        result |= (state->r7_mask ? 1 : 0) << 6;
-        result |= (state->r6_mask ? 1 : 0) << 5;
-        result |= (state->r5_mask ? 1 : 0) << 4;
-        result |= (state->r7_latch ? 1 : 0) << 2;
-        result |= (state->pending_r6 ? 1 : 0) << 1;
-        result |= (state->pending_r5 ? 1 : 0) << 0;
+        result |= (state->sid_line ? 1 : 0) << 7;
+        result |= (state->r7_latch ? 1 : 0) << 6;
+        result |= (state->pending_r6 ? 1 : 0) << 5;
+        result |= (state->pending_r5 ? 1 : 0) << 4;
+        result |= (state->int_enable ? 1 : 0) << 3;
+        result |= (state->r7_mask ? 1 : 0) << 2;
+        result |= (state->r6_mask ? 1 : 0) << 1;
+        result |= (state->r5_mask ? 1 : 0) << 0;
 
         state->a = result;
         states = 4;
@@ -1269,7 +1210,7 @@ int Emulate8085Op(State8085 *state, uint16_t offset, ExecutionStats8085 *stats)
         states = 6;
 		if (0 == state->cc.z) {
             states = 12;
-			returnToCaller(state, offset);
+			returnToCaller(state);
         }
 		break;
 	case 0xc1: // POP B
@@ -1297,7 +1238,7 @@ int Emulate8085Op(State8085 *state, uint16_t offset, ExecutionStats8085 *stats)
 	case 0xc4: // CNZ Addr
 		if (0 == state->cc.z)
 		{
-			call(state, offset, (opcode[2] << 8) | opcode[1]);
+			call(state, (opcode[2] << 8) | opcode[1]);
             states = 18;
 		}
 		else
@@ -1333,11 +1274,11 @@ int Emulate8085Op(State8085 *state, uint16_t offset, ExecutionStats8085 *stats)
         states = 6;
 		if (1 == state->cc.z) {
             states = 12;
-			returnToCaller(state, offset);
+			returnToCaller(state);
         }
 		break;
 	case 0xc9: // RET
-		returnToCaller(state, offset);
+		returnToCaller(state);
         states = 10;
 		break;
 	case 0xca: // JZ Addr
@@ -1355,7 +1296,7 @@ int Emulate8085Op(State8085 *state, uint16_t offset, ExecutionStats8085 *stats)
 		break;
 	case 0xcc: // CZ Addr
 		if (1 == state->cc.z) {
-			call(state, offset, (opcode[2] << 8) | opcode[1]);
+			call(state, (opcode[2] << 8) | opcode[1]);
             states = 18;
         }
 		else {
@@ -1364,7 +1305,7 @@ int Emulate8085Op(State8085 *state, uint16_t offset, ExecutionStats8085 *stats)
         }
 		break;
 	case 0xcd: // CALL Addr
-		call(state, offset, (opcode[2] << 8) | opcode[1]);
+		call(state, (opcode[2] << 8) | opcode[1]);
         states = 18;
 		break;
 	case 0xce: // ACI d8
@@ -1379,7 +1320,7 @@ int Emulate8085Op(State8085 *state, uint16_t offset, ExecutionStats8085 *stats)
 	case 0xd0: // RNC
         states = 6;
 		if (0 == state->cc.cy) {
-			returnToCaller(state, offset);
+			returnToCaller(state);
             states = 12;
         }
 		break;
@@ -1409,7 +1350,7 @@ int Emulate8085Op(State8085 *state, uint16_t offset, ExecutionStats8085 *stats)
         break;
 	case 0xd4: // CNC Addr
 		if (0 == state->cc.cy) {
-			call(state, offset, (opcode[2] << 8) | opcode[1]);
+			call(state, (opcode[2] << 8) | opcode[1]);
             states = 18;
         }
 		else {
@@ -1438,7 +1379,7 @@ int Emulate8085Op(State8085 *state, uint16_t offset, ExecutionStats8085 *stats)
         states = 6;
 		if (1 == state->cc.cy) {
             states = 12;
-			returnToCaller(state, offset);
+			returnToCaller(state);
         }
 		break;
 	case 0xd9:
@@ -1461,7 +1402,7 @@ int Emulate8085Op(State8085 *state, uint16_t offset, ExecutionStats8085 *stats)
         break;
 	case 0xdc: // CC Addr
 		if (1 == state->cc.cy) {
-			call(state, offset, (opcode[2] << 8) | opcode[1]);
+			call(state, (opcode[2] << 8) | opcode[1]);
             states = 18;
         }
 		else {
@@ -1485,7 +1426,7 @@ int Emulate8085Op(State8085 *state, uint16_t offset, ExecutionStats8085 *stats)
         states = 6;
 		if (0 == state->cc.p) {
             states = 12;
-			returnToCaller(state, offset);
+			returnToCaller(state);
         }
 		break;
 	case 0xe1: // POP H
@@ -1519,7 +1460,7 @@ int Emulate8085Op(State8085 *state, uint16_t offset, ExecutionStats8085 *stats)
 	break;
 	case 0xe4: // CPO Addr
 		if (0 == state->cc.p) {
-			call(state, offset, (opcode[2] << 8) | opcode[1]);
+			call(state, (opcode[2] << 8) | opcode[1]);
             states = 18;
         }
 		else {
@@ -1551,7 +1492,7 @@ int Emulate8085Op(State8085 *state, uint16_t offset, ExecutionStats8085 *stats)
         states = 6;
 		if (1 == state->cc.p) {
             states = 12;
-			returnToCaller(state, offset);
+			returnToCaller(state);
         }
 		break;
 	case 0xe9: // PCHL
@@ -1581,7 +1522,7 @@ int Emulate8085Op(State8085 *state, uint16_t offset, ExecutionStats8085 *stats)
 	break;
 	case 0xec: // CPE Addr
 		if (1 == state->cc.p) {
-			call(state, offset, (opcode[2] << 8) | opcode[1]);
+			call(state, (opcode[2] << 8) | opcode[1]);
             states = 18;
         }
 		else {
@@ -1606,7 +1547,7 @@ int Emulate8085Op(State8085 *state, uint16_t offset, ExecutionStats8085 *stats)
         states = 6;
 		if (0 == state->cc.s) {
             states = 12;
-			returnToCaller(state, offset);
+			returnToCaller(state);
         }
 		break;
 	case 0xf1: //POP PSW
@@ -1645,11 +1586,12 @@ int Emulate8085Op(State8085 *state, uint16_t offset, ExecutionStats8085 *stats)
 		break;
 	case 0xf3: // DI
 		state->int_enable = 0;
+        state->int_enable_delay = 0;
         states = 4;
 		break;
 	case 0xf4: // CP Addr
 		if (0 == state->cc.s) {
-			call(state, offset, (opcode[2] << 8) | opcode[1]);
+			call(state, (opcode[2] << 8) | opcode[1]);
             states = 18;
         }
 		else {
@@ -1697,7 +1639,7 @@ int Emulate8085Op(State8085 *state, uint16_t offset, ExecutionStats8085 *stats)
 	case 0xf8: // RM
         states = 6;
 		if (1 == state->cc.s) {
-			returnToCaller(state, offset);
+			returnToCaller(state);
             states = 12;
         }
 		break;
@@ -1717,12 +1659,12 @@ int Emulate8085Op(State8085 *state, uint16_t offset, ExecutionStats8085 *stats)
 		break;
 
 	case 0xfb: // EI
-		state->int_enable = 1;
+        state->int_enable_delay = 2;
         states = 4;
 		break;
 	case 0xfc: // CM Addr
 		if (1 == state->cc.s) {
-			call(state, offset, (opcode[2] << 8) | opcode[1]);
+			call(state, (opcode[2] << 8) | opcode[1]);
             states = 18;
         }
 		else {
@@ -1757,6 +1699,13 @@ int Emulate8085Op(State8085 *state, uint16_t offset, ExecutionStats8085 *stats)
     }
 
     stats->total_tstates += states;
+
+    if (state->int_enable_delay > 0) {
+        state->int_enable_delay--;
+        if (state->int_enable_delay == 0) {
+            state->int_enable = 1;
+        }
+    }
 
 	return 0;
 }
@@ -1802,188 +1751,18 @@ void Reset8085(State8085 *state, UINT16 pc, UINT16 sp)
     state->sp = sp;
 }
 
-State8085 *LoadProgram(State8085 *state, uint8_t *lines, int numLines, uint16_t offset)
-{
-    for (int i = 0; i < numLines; i++) {
-        uint8_t data = lines[i * 4]; // Data value
-        uint8_t lowByte = lines[(i * 4) + 1];        // Low byte of the address
-        uint8_t highByte = lines[(i * 4) + 2];       // High byte of the address
-        uint16_t currentAddress = (highByte << 8) | lowByte;
-        uint8_t kind = lines[(i * 4) + 2]; // Kind (1 for code, 2 for addr, 3 for data)
-
-        // printf("Loading %u (kind %u) at address %u\n", data, kind, currentAddress);
-
-        // Load the data into memory at the correct address
-        state->memory[currentAddress] = data;
-    }
-
-    return state;
-}
-
-State8085 *UnloadProgram(State8085 *state, uint8_t *lines, int numLines, uint16_t offset)
-{
-    for (int i = 0; i < numLines; i++) {
-        // Extract the address from the lines array
-        uint8_t lowByte = lines[(i * 4) + 1];        // Low byte of the address
-        uint8_t highByte = lines[(i * 4) + 2];       // High byte of the address
-        uint16_t currentAddress = (highByte << 8) | lowByte;
-
-        // Set the memory at the current address to 0
-        state->memory[currentAddress] = 0;
-    }
-
-    return state;
-}
-
-// State8085 *LoadProgram(State8085 *state, uint8_t *lines, int len, uint16_t offset)
-// {
-// 	int i = 0;
-// 	while (i < len)
-// 	{
-// 		printf("line %d %u\n", i, lines[i]);
-// 		state->memory[offset + i] = lines[i];
-// 		i++;
-// 	}
-// 	printf("Offset %u\n", offset);
-// 	printf("Memory at offset %u\n", state->memory[offset]);
-// 	return state;
-// }
-
-int ExecuteProgramUntil(State8085 *state, uint16_t offset, uint16_t startAt, uint16_t pauseAt)
-{
-	int done = 0;
-    ExecutionStats8085 stats = {0};
-	TRACE_PRINTF("Start At: %d\n", startAt);
-	TRACE_PRINTF("Offset: %d\n", offset);
-	if(offset == startAt)
-		state->sp = 0xFFFF;
-	state->pc = startAt;
-    stats.min_sp = state->sp;
-    stats.min_sp_set = true;
-	TRACE_PRINTF("Pause At: %d\n", pauseAt);
-	while (done == 0 && state->pc < pauseAt)
-	{
-		done = Emulate8085Op(state, offset, &stats);
-		TRACE_PRINTF("PC in C %d", state->pc);
-	}
-    last_total_tstates = stats.total_tstates;
-    last_start_sp = 0xFFFF;
-    last_min_sp = stats.min_sp;
-    // if (sim_options.timing_enabled) {
-    //     float t_state_duration_ms = 1000.0f / sim_options.clock_frequency_hz;
-    //     float delay_ms = stats.total_tstates * t_state_duration_ms;
-    //     printf("\nSleeping for %f, states = %llu, clock = %f", delay_ms, stats.total_tstates, sim_options.clock_frequency_hz);
-    //     emscripten_sleep((int)delay_ms);
-    // }
-	TRACE_PRINTF("%c", state->cc.z ? 'z' : '.');
-	TRACE_PRINTF("%c", state->cc.s ? 's' : '.');
-	TRACE_PRINTF("%c", state->cc.p ? 'p' : '.');
-	TRACE_PRINTF("%c", state->cc.cy ? 'c' : '.');
-	TRACE_PRINTF("%c  ", state->cc.ac ? 'a' : '.');
-	TRACE_PRINTF("A $%02x B $%02x C $%02x D $%02x E $%02x H $%02x L $%02x SP %04x PC %04x\n", state->a, state->b, state->c,
-		   state->d, state->e, state->h, state->l, state->sp, state->pc);
-	return done;
-}
-
-State8085 *ExecuteProgram(State8085 *state, uint16_t offset)
-{
-	int done = 0;
-	int cycles = 0;
-    ExecutionStats8085 stats = {0};
-
-	TRACE_PRINTF("State Ptr: %p, SP Ptr: %p\n", state, &state->sp);
-	TRACE_PRINTF("Offset %u\n", offset);
-	state->pc = offset;
-	state->sp = 0xFFFF;
-    stats.min_sp = state->sp;
-    stats.min_sp_set = true;
-	TRACE_PRINTF("Memory at offset %u\n", state->memory[offset]);
-	TRACE_PRINTF("Memory at offset + 1 %u\n", state->memory[offset + 1]);
-
-	while (done == 0)
-	{
-		if (cycles > 100000)
-			exit(2);
-		done = Emulate8085Op(state, offset, &stats);
-		cycles++;
-	}
-    last_total_tstates = stats.total_tstates;
-    last_start_sp = 0xFFFF;
-    last_min_sp = stats.min_sp;
-
-    // if (sim_options.timing_enabled) {
-    //     float t_state_duration_ms = 1000.0f / sim_options.clock_frequency_hz;
-    //     float delay_ms = stats.total_tstates * t_state_duration_ms;
-    //     emscripten_sleep((int)delay_ms);
-    // }
-
-	TRACE_PRINTF("%c", state->cc.z ? 'z' : '.');
-	TRACE_PRINTF("%c", state->cc.s ? 's' : '.');
-	TRACE_PRINTF("%c", state->cc.p ? 'p' : '.');
-	TRACE_PRINTF("%c", state->cc.cy ? 'c' : '.');
-	TRACE_PRINTF("%c  ", state->cc.ac ? 'a' : '.');
-	TRACE_PRINTF("A $%02x B $%02x C $%02x D $%02x E $%02x H $%02x L $%02x SP %04x PC %04x\n", state->a, state->b, state->c,
-		   state->d, state->e, state->h, state->l, state->sp, state->pc);
-	return state;
-}
-
-typedef struct {
-    int halted;
-    int total_tstates;
-} SliceResult;
-
-void ExecuteProgramSlice(State8085 *state, int offset, uint16_t sliceSize, SliceResult* resultOut)
-{
-	int done = 0;
-    ExecutionStats8085 stats = {0};
-
-    if (offset >= 0) {
-        state->pc = offset;
-        state->sp = 0xFFFF;
-        last_start_sp = state->sp;
-        last_min_sp = state->sp;
-        stats.min_sp = state->sp;
-        stats.min_sp_set = true;
-    }
-
-	while (done == 0 && stats.total_tstates < sliceSize)
-	{
-        if (state->hlt_enable == 1) {
-            state->hlt_enable = 0;
-            done = 1;
-        } else {
-            done = Emulate8085Op(state, offset, &stats);
-        }
-	}
-
-    // if (sim_options.timing_enabled) {
-    //     float t_state_duration_ms = 1000.0f / sim_options.clock_frequency_hz;
-    //     float delay_ms = stats.total_tstates * t_state_duration_ms;
-    //     emscripten_sleep((int)delay_ms);
-    // }
-
-	TRACE_PRINTF("%c", state->cc.z ? 'z' : '.');
-	TRACE_PRINTF("%c", state->cc.s ? 's' : '.');
-	TRACE_PRINTF("%c", state->cc.p ? 'p' : '.');
-	TRACE_PRINTF("%c", state->cc.cy ? 'c' : '.');
-	TRACE_PRINTF("%c  ", state->cc.ac ? 'a' : '.');
-	TRACE_PRINTF("A $%02x B $%02x C $%02x D $%02x E $%02x H $%02x L $%02x SP %04x PC %04x\n", state->a, state->b, state->c,
-		   state->d, state->e, state->h, state->l, state->sp, state->pc);
-	// return done;
-    resultOut->halted = done;
-    resultOut->total_tstates = stats.total_tstates;
-    if (stats.min_sp_set && stats.min_sp < last_min_sp) {
-        last_min_sp = stats.min_sp;
-    }
-}
-
-int InterruptToHalt(State8085 *state) {
-    state->hlt_enable = 1;
-    return 1;
-}
-
 UINT8 *getMemory(State8085 *state) { return state->memory; }
 UINT8 *getIO(State8085 *state) { return state->io; }
+
+void setSIDLine(State8085 *state, int level)
+{
+    state->sid_line = (level != 0);
+}
+
+int getSODLine(State8085 *state)
+{
+    return state->sod_line ? 1 : 0;
+}
 
 int triggerInterrupt(State8085 *state, int code, int active)
 {
