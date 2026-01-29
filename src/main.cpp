@@ -38,6 +38,11 @@ struct Tracepoint {
     UINT32 hits = 0;
 };
 
+struct IOInit {
+    UINT8 port;
+    UINT8 value;
+};
+
 struct Config {
     const char *inputFile = nullptr;
     const char *outputFile = nullptr;
@@ -51,6 +56,8 @@ struct Config {
     std::vector<Tracepoint> tracepoints;
     UINT64 tracepointMax = 0;
     bool tracepointStop = false;
+    std::vector<IOInit> ioInit;
+    bool ioTrace = false;
     bool quiet = false;
     bool summary = false;
     bool entrySet = false;
@@ -78,6 +85,8 @@ static void PrintUsage(const char *prog) {
     fprintf(stderr, "  -q, --quiet           Only output trace, no status messages\n");
     fprintf(stderr, "  -S, --summary         Output only final state as JSON (no per-step trace)\n");
     fprintf(stderr, "  -d, --dump=START:LEN  Dump memory range at exit (hex, can repeat)\n");
+    fprintf(stderr, "  --io=PORT:VAL         Initialize I/O port value (hex, can repeat)\n");
+    fprintf(stderr, "  --io-trace            Log IN/OUT operations to stderr\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Tracepoint Options (require -S):\n");
     fprintf(stderr, "  -t, --tracepoint=ADDR       Trace only this address (hex, can repeat)\n");
@@ -238,6 +247,34 @@ static bool ParseDump(const char *str, MemoryDump *dump) {
 }
 
 //----------------------------------------------------------------------------
+// Parse I/O init spec: PORT:VALUE (hex, e.g., "0x10:0x3C")
+//----------------------------------------------------------------------------
+
+static bool ParseIOInit(const char *str, IOInit *io) {
+    char *colon = (char *)strchr(str, ':');
+    if (!colon) {
+        return false;
+    }
+
+    *colon = '\0';
+    UINT16 port16 = 0;
+    bool ok = ParseHex(str, &port16);
+    *colon = ':';
+    if (!ok || port16 > 0xFF) {
+        return false;
+    }
+
+    UINT16 val16 = 0;
+    if (!ParseHex(colon + 1, &val16) || val16 > 0xFF) {
+        return false;
+    }
+
+    io->port = (UINT8)port16;
+    io->value = (UINT8)val16;
+    return true;
+}
+
+//----------------------------------------------------------------------------
 // Load binary file
 //----------------------------------------------------------------------------
 
@@ -337,9 +374,18 @@ static bool IsStopAddress(UINT16 pc, const std::vector<UINT16> &stopAddrs) {
 // I/O hook (stub)
 //----------------------------------------------------------------------------
 
+static bool gIoTrace = false;
+
 extern "C" void io_write(int address, int value) {
-    (void)address;
-    (void)value;
+    if (gIoTrace) {
+        fprintf(stderr, "[IO] OUT 0x%02X = 0x%02X\n", address & 0xFF, value & 0xFF);
+    }
+}
+
+extern "C" void io_read(int address, int value) {
+    if (gIoTrace) {
+        fprintf(stderr, "[IO] IN  0x%02X -> 0x%02X\n", address & 0xFF, value & 0xFF);
+    }
 }
 
 //----------------------------------------------------------------------------
@@ -357,6 +403,8 @@ int main(int argc, char *argv[]) {
                                        {"irq", required_argument, nullptr, 'i'},
                                        {"output", required_argument, nullptr, 'o'},
                                        {"dump", required_argument, nullptr, 'd'},
+                                       {"io", required_argument, nullptr, 'I'},
+                                       {"io-trace", no_argument, nullptr, 'O'},
                                        {"tracepoint", required_argument, nullptr, 't'},
                                        {"tracepoint-file", required_argument, nullptr, 'T'},
                                        {"tracepoint-max", required_argument, nullptr, 'M'},
@@ -367,7 +415,7 @@ int main(int argc, char *argv[]) {
                                        {nullptr, 0, nullptr, 0}};
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "l:e:p:n:s:i:o:d:t:T:M:PqSh", longOpts, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "l:e:p:n:s:i:o:d:I:Ot:T:M:PqSh", longOpts, nullptr)) != -1) {
         switch (opt) {
         case 'l':
             if (!ParseHex(optarg, &cfg.loadAddr)) {
@@ -421,6 +469,18 @@ int main(int argc, char *argv[]) {
             cfg.dumps.push_back(dump);
             break;
         }
+        case 'I': {
+            IOInit io;
+            if (!ParseIOInit(optarg, &io)) {
+                fprintf(stderr, "Error: Invalid I/O init '%s' (use PORT:VALUE, e.g., 0x10:0x3C)\n", optarg);
+                return 1;
+            }
+            cfg.ioInit.push_back(io);
+            break;
+        }
+        case 'O':
+            cfg.ioTrace = true;
+            break;
         case 't': {
             UINT16 addr;
             if (!ParseHex(optarg, &addr)) {
@@ -486,6 +546,10 @@ int main(int argc, char *argv[]) {
     }
 
     Reset8085(state, cfg.entryAddr, cfg.spAddr);
+    for (const auto &io : cfg.ioInit) {
+        state->io[io.port] = io.value;
+    }
+    gIoTrace = cfg.ioTrace;
 
     FILE *out = stdout;
     if (cfg.outputFile) {

@@ -145,6 +145,7 @@ void checkInterrupts(State8085 *state) {
 }
 
 extern void io_write(int address, int value);
+extern void io_read(int address, int value);
 
 int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
     checkInterrupts(state);
@@ -1316,6 +1317,7 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         state->a = state->io[opcode[1]];
         state->pc++;
         states = 10;
+        io_read(opcode[1], state->a);
         break;
     case 0xdc: // CC Addr
         if (1 == state->cc.cy) {
