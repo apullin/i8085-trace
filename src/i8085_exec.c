@@ -110,45 +110,53 @@ void rst(State8085 *state, uint8_t rst_number, uint8_t half) {
     state->pc = rst_number * 8 + half * 4;
 }
 
-void checkInterrupts(State8085 *state) {
+bool checkInterrupts(State8085 *state) {
     // Highest priority first
     if (state->pending_trap) {
         state->pending_trap = 0;
         state->int_enable = 0;
         rst(state, 4, 1); // RST 4.5 = 0x24
-        return;
+        return true;
     }
 
     if (state->int_enable == 0)
-        return;
+        return false;
 
     if (state->r7_latch && !state->r7_mask) {
         state->r7_latch = 0;
         state->int_enable = 0;
         rst(state, 7, 1); // RST 7.5 = 0x3C
-        return;
+        return true;
     }
 
     if (state->pending_r6 && !state->r6_mask) {
         state->pending_r6 = 0;
         state->int_enable = 0;
         rst(state, 6, 1); // RST 6.5 = 0x34
-        return;
+        return true;
     }
 
     if (state->pending_r5 && !state->r5_mask) {
         state->pending_r5 = 0;
         state->int_enable = 0;
         rst(state, 5, 1); // RST 5.5 = 0x2C
-        return;
+        return true;
     }
+
+    return false;
 }
 
 extern void io_write(int address, int value);
 extern void io_read(int address, int value);
 
 int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
-    checkInterrupts(state);
+    bool interruptTaken = checkInterrupts(state);
+    if (state->hlt_enable) {
+        if (!interruptTaken) {
+            return 1;
+        }
+        state->hlt_enable = 0;
+    }
 
     unsigned char *opcode = &state->memory[state->pc];
     uint8_t current_opcode = *opcode;
@@ -810,9 +818,8 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         states = 7;
     } break;
     case 0x76: // HLT
+        state->hlt_enable = 1;
         states = 5;
-        // TODO Add delay right here.
-        return 1;
         break;
     case 0x77: // MOV M, A
     {
@@ -1302,7 +1309,8 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         }
         break;
     case 0xd9:
-        InvalidInstruction(state);
+        returnToCaller(state);
+        states = 10;
         break;
     case 0xda: // JC Addr
         if (1 == state->cc.cy) {
@@ -1609,5 +1617,5 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         }
     }
 
-    return 0;
+    return state->hlt_enable ? 1 : 0;
 }

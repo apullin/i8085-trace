@@ -736,7 +736,7 @@ int Disassemble8085Op(const UINT8 *codebuffer, int pc, char *out, size_t out_len
         printf("RC");
         break;
     case 0xd9:
-        printf("RET");
+        printf("RETI");
         break;
     case 0xda:
         printf("JC     $%02x%02x", code[2], code[1]);

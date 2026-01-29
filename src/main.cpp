@@ -58,6 +58,7 @@ struct Config {
     bool tracepointStop = false;
     std::vector<IOInit> ioInit;
     bool ioTrace = false;
+    int sidInit = -1;
     bool quiet = false;
     bool summary = false;
     bool entrySet = false;
@@ -87,6 +88,7 @@ static void PrintUsage(const char *prog) {
     fprintf(stderr, "  -d, --dump=START:LEN  Dump memory range at exit (hex, can repeat)\n");
     fprintf(stderr, "  --io=PORT:VAL         Initialize I/O port value (hex, can repeat)\n");
     fprintf(stderr, "  --io-trace            Log IN/OUT operations to stderr\n");
+    fprintf(stderr, "  --sid=LEVEL           Set SID input line (0 or 1)\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Tracepoint Options (require -S):\n");
     fprintf(stderr, "  -t, --tracepoint=ADDR       Trace only this address (hex, can repeat)\n");
@@ -370,6 +372,10 @@ static bool IsStopAddress(UINT16 pc, const std::vector<UINT16> &stopAddrs) {
     return std::find(stopAddrs.begin(), stopAddrs.end(), pc) != stopAddrs.end();
 }
 
+static bool HasFutureIRQ(const Config &cfg, size_t nextIRQ) {
+    return nextIRQ < cfg.irqs.size();
+}
+
 //----------------------------------------------------------------------------
 // I/O hook (stub)
 //----------------------------------------------------------------------------
@@ -405,6 +411,7 @@ int main(int argc, char *argv[]) {
                                        {"dump", required_argument, nullptr, 'd'},
                                        {"io", required_argument, nullptr, 'I'},
                                        {"io-trace", no_argument, nullptr, 'O'},
+                                       {"sid", required_argument, nullptr, 'y'},
                                        {"tracepoint", required_argument, nullptr, 't'},
                                        {"tracepoint-file", required_argument, nullptr, 'T'},
                                        {"tracepoint-max", required_argument, nullptr, 'M'},
@@ -415,7 +422,7 @@ int main(int argc, char *argv[]) {
                                        {nullptr, 0, nullptr, 0}};
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "l:e:p:n:s:i:o:d:I:Ot:T:M:PqSh", longOpts, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "l:e:p:n:s:i:o:d:I:Oy:t:T:M:PqSh", longOpts, nullptr)) != -1) {
         switch (opt) {
         case 'l':
             if (!ParseHex(optarg, &cfg.loadAddr)) {
@@ -481,6 +488,16 @@ int main(int argc, char *argv[]) {
         case 'O':
             cfg.ioTrace = true;
             break;
+        case 'y': {
+            char *end = nullptr;
+            long val = strtol(optarg, &end, 0);
+            if (*end != '\0' || (val != 0 && val != 1)) {
+                fprintf(stderr, "Error: Invalid SID level '%s' (use 0 or 1)\n", optarg);
+                return 1;
+            }
+            cfg.sidInit = (int)val;
+            break;
+        }
         case 't': {
             UINT16 addr;
             if (!ParseHex(optarg, &addr)) {
@@ -549,6 +566,9 @@ int main(int argc, char *argv[]) {
     for (const auto &io : cfg.ioInit) {
         state->io[io.port] = io.value;
     }
+    if (cfg.sidInit >= 0) {
+        setSIDLine(state, cfg.sidInit);
+    }
     gIoTrace = cfg.ioTrace;
 
     FILE *out = stdout;
@@ -603,7 +623,7 @@ int main(int argc, char *argv[]) {
     UINT64 totalTracepointHits = 0;
     ExecutionStats8085 stats = {0};
 
-    while (step < cfg.maxSteps && !halted) {
+    while (step < cfg.maxSteps) {
         while (nextIRQ < cfg.irqs.size() && cfg.irqs[nextIRQ].atStep <= step) {
             triggerInterrupt(state, cfg.irqs[nextIRQ].code, 1);
             if (!cfg.quiet && !cfg.summary) {
@@ -662,7 +682,7 @@ int main(int argc, char *argv[]) {
             break;
         }
 
-        if (pc == lastPC) {
+        if (!halted && pc == lastPC) {
             if (!cfg.quiet && !cfg.summary)
                 fprintf(stderr, "Infinite loop detected at 0x%04X\n", pc);
             haltReason = "loop";
@@ -671,8 +691,10 @@ int main(int argc, char *argv[]) {
         lastPC = pc;
 
         halted = Emulate8085Op(state, &stats);
-        if (halted) {
+        bool stop = false;
+        if (halted && !HasFutureIRQ(cfg, nextIRQ)) {
             haltReason = "hlt";
+            stop = true;
         }
 
         if (!cfg.summary) {
@@ -681,6 +703,8 @@ int main(int argc, char *argv[]) {
         }
 
         step++;
+        if (stop)
+            break;
     }
 
     if (!cfg.quiet && !cfg.summary) {
