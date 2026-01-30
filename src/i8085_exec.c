@@ -76,15 +76,15 @@ uint8_t addByteWithCarry(State8085 *state, uint8_t lhs, uint8_t rhs, should_pres
 
 uint8_t subtractByte(State8085 *state, uint8_t lhs, uint8_t rhs, should_preserve_carry preserveCarry) {
     uint16_t res = lhs - rhs;
-    state->cc.ac = (lhs & 0xf) + ((~rhs + 1) & 0xf) > 0xf;
+    state->cc.ac = (lhs & 0x0f) < (rhs & 0x0f);
     ArithFlagsA(state, res, preserveCarry);
     return (uint8_t)res;
 }
 
 uint8_t subtractByteWithBorrow(State8085 *state, uint8_t lhs, uint8_t rhs, should_preserve_carry preserveCarry) {
-    uint16_t res = lhs - rhs - (state->cc.cy ? 1 : 0);
     uint8_t carry = state->cc.cy ? 1 : 0;
-    state->cc.ac = (lhs & 0x0F) + ((~(rhs + carry) + 1) & 0x0f) > 0x0f;
+    uint16_t res = lhs - rhs - carry;
+    state->cc.ac = (lhs & 0x0f) < ((rhs & 0x0f) + carry);
     ArithFlagsA(state, res, preserveCarry);
     return (uint8_t)res;
 }
@@ -1581,7 +1581,7 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         state->cc.s = (0x80 == (x & 0x80));
         state->cc.p = parity(x, 8);
         state->cc.cy = (state->a < opcode[1]);
-        state->cc.ac = 0;
+        state->cc.ac = (state->a & 0x0f) < (opcode[1] & 0x0f);
         state->pc++;
         states = 7;
     } break;
