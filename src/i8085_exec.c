@@ -385,38 +385,26 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         break;
     case 0x27: // DAA
     {
-        uint16_t res = state->a;
-        // printf("value of a %d\n", res);
+        uint8_t a = state->a;
+        uint8_t correction = 0;
+        uint8_t cy = state->cc.cy;
 
-        uint8_t least_four_bits = state->a & 0x0f;
-        // printf("least four bits %d\n", least_four_bits);
-
-        if (state->cc.ac == 1 || least_four_bits > 9) {
-            // printf("Adding 6 to a\n");
-            res = state->a + 6;
-
-            if (least_four_bits + 6 > 0xf)
-                state->cc.ac = 1;
+        if ((a & 0x0f) > 9 || state->cc.ac) {
+            correction |= 0x06;
         }
 
-        if (res > 0xff) {
-            // printf("Setting carry flag\n");
-            state->cc.cy = 1;
+        if (a > 0x99 || state->cc.cy) {
+            correction |= 0x60;
+            cy = 1;
         }
 
-        res = res & 0xff;
-
-        least_four_bits = res & 0x0f;
-        uint8_t most_four_bits = (res >> 4) & 0x0f;
-
-        if (state->cc.cy == 1 || most_four_bits > 9) {
-            // printf("Adding 6 to high bits %d\n", res);
-            res = ((most_four_bits + 6) << 4) | least_four_bits;
-        }
-
-        // printf("Final value %d\n", res);
-        ArithFlagsA(state, res, UPDATE_CARRY);
+        uint16_t res = (uint16_t)a + correction;
+        state->cc.cy = cy;
+        state->cc.ac = ((a & 0x0f) + (correction & 0x0f)) > 0x0f;
         state->a = (uint8_t)res;
+        state->cc.z = (state->a == 0);
+        state->cc.s = (0x80 == (state->a & 0x80));
+        state->cc.p = parity(state->a, 8);
         states = 4;
     } break;
     case 0x28:
