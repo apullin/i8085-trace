@@ -46,6 +46,7 @@ struct IOInit {
 struct Config {
     const char *inputFile = nullptr;
     const char *outputFile = nullptr;
+    const char *coverageFile = nullptr;
     UINT16 loadAddr = 0x0000;
     UINT16 entryAddr = 0x0000;
     UINT16 spAddr = 0xFFFF;
@@ -86,6 +87,7 @@ static void PrintUsage(const char *prog) {
     fprintf(stderr, "  -q, --quiet           Only output trace, no status messages\n");
     fprintf(stderr, "  -S, --summary         Output only final state as JSON (no per-step trace)\n");
     fprintf(stderr, "  -d, --dump=START:LEN  Dump memory range at exit (hex, can repeat)\n");
+    fprintf(stderr, "  --cov=FILE            Write coverage JSON (pc/opcode hit counts)\n");
     fprintf(stderr, "  --io=PORT:VAL         Initialize I/O port value (hex, can repeat)\n");
     fprintf(stderr, "  --io-trace            Log IN/OUT operations to stderr\n");
     fprintf(stderr, "  --sid=LEVEL           Set SID input line (0 or 1)\n");
@@ -368,6 +370,39 @@ static void OutputTrace(FILE *out, const TraceState &t, const State8085 *state) 
     fprintf(out, "]}\n");
 }
 
+static void WriteCoverage(const char *path, UINT64 steps, const std::vector<UINT64> &pcHits,
+                          const std::vector<UINT64> &opHits) {
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        fprintf(stderr, "Error: Cannot open coverage file '%s'\n", path);
+        return;
+    }
+
+    fprintf(f, "{\"steps\":%" PRIu64 ",\"pc_hits\":[", steps);
+    bool first = true;
+    for (size_t i = 0; i < pcHits.size(); ++i) {
+        if (pcHits[i] == 0)
+            continue;
+        if (!first)
+            fprintf(f, ",");
+        fprintf(f, "{\"pc\":\"%04X\",\"count\":%" PRIu64 "}", (unsigned)i, pcHits[i]);
+        first = false;
+    }
+    fprintf(f, "],\"op_hits\":[");
+    first = true;
+    for (size_t i = 0; i < opHits.size(); ++i) {
+        if (opHits[i] == 0)
+            continue;
+        if (!first)
+            fprintf(f, ",");
+        fprintf(f, "{\"op\":\"%02X\",\"count\":%" PRIu64 "}", (unsigned)i, opHits[i]);
+        first = false;
+    }
+    fprintf(f, "]}\n");
+
+    fclose(f);
+}
+
 static bool IsStopAddress(UINT16 pc, const std::vector<UINT16> &stopAddrs) {
     return std::find(stopAddrs.begin(), stopAddrs.end(), pc) != stopAddrs.end();
 }
@@ -409,6 +444,7 @@ int main(int argc, char *argv[]) {
                                        {"irq", required_argument, nullptr, 'i'},
                                        {"output", required_argument, nullptr, 'o'},
                                        {"dump", required_argument, nullptr, 'd'},
+                                       {"cov", required_argument, nullptr, 'C'},
                                        {"io", required_argument, nullptr, 'I'},
                                        {"io-trace", no_argument, nullptr, 'O'},
                                        {"sid", required_argument, nullptr, 'y'},
@@ -422,7 +458,7 @@ int main(int argc, char *argv[]) {
                                        {nullptr, 0, nullptr, 0}};
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "l:e:p:n:s:i:o:d:I:Oy:t:T:M:PqSh", longOpts, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "l:e:p:n:s:i:o:d:C:I:Oy:t:T:M:PqSh", longOpts, nullptr)) != -1) {
         switch (opt) {
         case 'l':
             if (!ParseHex(optarg, &cfg.loadAddr)) {
@@ -476,6 +512,9 @@ int main(int argc, char *argv[]) {
             cfg.dumps.push_back(dump);
             break;
         }
+        case 'C':
+            cfg.coverageFile = optarg;
+            break;
         case 'I': {
             IOInit io;
             if (!ParseIOInit(optarg, &io)) {
@@ -622,6 +661,13 @@ int main(int argc, char *argv[]) {
     const char *haltReason = "max";
     UINT64 totalTracepointHits = 0;
     ExecutionStats8085 stats = {0};
+    const bool doCoverage = (cfg.coverageFile != nullptr);
+    std::vector<UINT64> pcHits;
+    std::vector<UINT64> opHits;
+    if (doCoverage) {
+        pcHits.assign(0x10000, 0);
+        opHits.assign(0x100, 0);
+    }
 
     while (step < cfg.maxSteps) {
         while (nextIRQ < cfg.irqs.size() && cfg.irqs[nextIRQ].atStep <= step) {
@@ -636,6 +682,10 @@ int main(int argc, char *argv[]) {
         UINT16 sp = state->sp;
         UINT8 flags = PackFlags(state->cc);
         UINT64 clocks = stats.total_tstates;
+        if (doCoverage) {
+            pcHits[pc]++;
+            opHits[state->memory[pc]]++;
+        }
 
         Disassemble8085Op(state->memory, pc, disasmBuf, sizeof(disasmBuf));
         ExtractMnemonic(disasmBuf, mnemonicBuf, sizeof(mnemonicBuf));
@@ -728,6 +778,10 @@ int main(int argc, char *argv[]) {
         fprintf(out, "\"%02X\",\"%02X\",\"%02X\",\"%02X\",\"%02X\",\"%02X\",\"%02X\"", state->a, state->b, state->c,
                 state->d, state->e, state->h, state->l);
         fprintf(out, "]}\n");
+    }
+
+    if (doCoverage) {
+        WriteCoverage(cfg.coverageFile, step, pcHits, opHits);
     }
 
     for (const auto &dump : cfg.dumps) {

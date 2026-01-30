@@ -46,6 +46,7 @@ Output Options:
   -q, --quiet           Only output trace, no status messages
   -S, --summary         Output only final state as JSON (no per-step trace)
   -d, --dump=START:LEN  Dump memory range at exit (hex, can repeat)
+  --cov=FILE            Write coverage JSON (pc/opcode hit counts)
 
 Tracepoint Options (require -S):
   -t, --tracepoint=ADDR       Trace only this address (hex, can repeat)
@@ -122,6 +123,11 @@ Memory dump 0x2000 - 0x201F (32 bytes):
 ```
 
 Multiple dump ranges can be specified by repeating the `-d` option.
+
+## Coverage Output
+
+The `--cov=FILE` option writes a JSON summary of executed PC and opcode hit
+counts. This is intended for test harnesses to validate instruction coverage.
 
 ## Interrupt Simulation
 
