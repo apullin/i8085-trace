@@ -26,7 +26,7 @@ void LogicFlagsA(State8085 *state, uint8_t ac) {
     // Verified in OpenSimH code, that both
     // carry and aux carry are reset.
     state->cc.cy = 0;
-    state->cc.ac = 0;
+    state->cc.ac = ac ? 1 : 0;
     state->cc.z = (state->a == 0);
     state->cc.s = (0x80 == (state->a & 0x80));
     state->cc.p = parity(state->a, 8);
