@@ -722,8 +722,9 @@ int main(int argc, char *argv[]) {
     if (cfg.summary) {
         fprintf(out,
                 "{\"pc\":\"%04X\",\"sp\":\"%04X\",\"f\":\"%02X\",\"clk\":%" PRIu64 ",\"steps\":%" PRIu64
-                ",\"halt\":\"%s\",\"r\":[",
-                state->pc, state->sp, PackFlags(state->cc), stats.total_tstates, step, haltReason);
+                ",\"halt\":\"%s\",\"sod\":%u,\"r\":[",
+                state->pc, state->sp, PackFlags(state->cc), stats.total_tstates, step, haltReason,
+                state->sod_line ? 1u : 0u);
         fprintf(out, "\"%02X\",\"%02X\",\"%02X\",\"%02X\",\"%02X\",\"%02X\",\"%02X\"", state->a, state->b, state->c,
                 state->d, state->e, state->h, state->l);
         fprintf(out, "]}\n");
