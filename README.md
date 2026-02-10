@@ -40,6 +40,7 @@ Execution Options:
   -n, --max-steps=N     Max instructions (default: 1000000)
   -s, --stop-at=ADDR    Stop at address (hex, can repeat)
   --irq=CODE@STEP       Trigger interrupt at step (can repeat)
+  --timer=CODE:PERIOD   Periodic interrupt every PERIOD T-states (can repeat)
 
 Output Options:
   -o, --output=FILE     Output file (default: stdout)
@@ -53,6 +54,9 @@ Tracepoint Options (require -S):
   -T, --tracepoint-file=FILE  Load tracepoint addresses from file
   --tracepoint-max=N          Stop after N total tracepoint hits
   --tracepoint-stop           Stop when all tracepoints hit at least once
+
+Debugging:
+  --gdb=PORT            Start GDB RSP server on PORT (e.g., --gdb=1234)
 
 Other:
   -h, --help            Show help
@@ -70,6 +74,12 @@ Examples:
 ./i8085-trace -l 0x2000 -e 0x2000 -p 0xFF00 program.bin
 ./i8085-trace -n 100 -o trace.ndjson test.bin
 ./i8085-trace --irq=55@500 -s 0x2100 program.bin
+```
+
+GDB remote debugging (RSP) mode:
+```bash
+./i8085-trace --gdb=1234 program.bin
+gdb -ex 'target remote localhost:1234'
 ```
 
 ## Output Format
@@ -138,6 +148,10 @@ The `--irq=CODE@STEP` option triggers an interrupt at a specific instruction ste
 - `75` (RST 7.5) vector 0x003C
 
 The interrupt is recognized only if interrupts are enabled and the corresponding mask allows it. The simulator models the 8085 latch/mask behavior used by RIM/SIM.
+
+The `--timer=CODE:PERIOD` option triggers an interrupt periodically every PERIOD
+T-states (based on the internal cycle counter). This is useful for simulating
+periodic hardware interrupts.
 
 ## Termination Conditions
 

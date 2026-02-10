@@ -5,6 +5,7 @@
 //----------------------------------------------------------------------------
 
 #include "i8085_cpu.h"
+#include "gdb_stub.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cinttypes>
@@ -23,6 +24,8 @@ struct ScheduledIRQ {
     int code;
     UINT64 atStep;
 };
+
+// PeriodicTimer is defined in gdb_stub.hpp
 
 //----------------------------------------------------------------------------
 // Configuration
@@ -53,6 +56,7 @@ struct Config {
     UINT64 maxSteps = 1000000;
     std::vector<UINT16> stopAddrs;
     std::vector<ScheduledIRQ> irqs;
+    std::vector<PeriodicTimer> timers;
     std::vector<MemoryDump> dumps;
     std::vector<Tracepoint> tracepoints;
     UINT64 tracepointMax = 0;
@@ -60,6 +64,7 @@ struct Config {
     std::vector<IOInit> ioInit;
     bool ioTrace = false;
     int sidInit = -1;
+    int gdbPort = 0;
     bool quiet = false;
     bool summary = false;
     bool entrySet = false;
@@ -81,6 +86,7 @@ static void PrintUsage(const char *prog) {
     fprintf(stderr, "  -n, --max-steps=N     Max instructions (default: 1000000)\n");
     fprintf(stderr, "  -s, --stop-at=ADDR    Stop at address (hex, can repeat)\n");
     fprintf(stderr, "  --irq=CODE@STEP       Trigger interrupt at step (can repeat)\n");
+    fprintf(stderr, "  --timer=CODE:PERIOD   Periodic interrupt every PERIOD T-states (can repeat)\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Output Options:\n");
     fprintf(stderr, "  -o, --output=FILE     Output file (default: stdout)\n");
@@ -97,6 +103,9 @@ static void PrintUsage(const char *prog) {
     fprintf(stderr, "  -T, --tracepoint-file=FILE  Load tracepoint addresses from file\n");
     fprintf(stderr, "  --tracepoint-max=N          Stop after N total tracepoint hits\n");
     fprintf(stderr, "  --tracepoint-stop           Stop when all tracepoints hit at least once\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Debugging:\n");
+    fprintf(stderr, "  --gdb=PORT            Start GDB RSP server on PORT (e.g., --gdb=1234)\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Other:\n");
     fprintf(stderr, "  -h, --help            Show this help\n");
@@ -164,6 +173,53 @@ static bool ParseIRQ(const char *str, ScheduledIRQ *irq) {
 
     irq->code = code;
     irq->atStep = step;
+    return true;
+}
+
+//----------------------------------------------------------------------------
+// Parse timer spec: CODE:PERIOD (e.g., "65:30720")
+//----------------------------------------------------------------------------
+
+static bool ParseTimer(const char *str, PeriodicTimer *timer) {
+    const char *colon = strchr(str, ':');
+    if (!colon) {
+        return false;
+    }
+
+    std::string codeStr(str, colon - str);
+    int code = 0;
+
+    char *end = nullptr;
+    long numeric = strtol(codeStr.c_str(), &end, 10);
+    if (end && *end == '\0') {
+        if (numeric == 45 || numeric == 55 || numeric == 65 || numeric == 75) {
+            code = (int)numeric;
+        } else {
+            return false;
+        }
+    } else {
+        for (auto &c : codeStr)
+            c = (char)tolower(c);
+        if (codeStr == "trap" || codeStr == "rst4.5" || codeStr == "4.5")
+            code = 45;
+        else if (codeStr == "rst5.5" || codeStr == "5.5" || codeStr == "r5.5")
+            code = 55;
+        else if (codeStr == "rst6.5" || codeStr == "6.5" || codeStr == "r6.5")
+            code = 65;
+        else if (codeStr == "rst7.5" || codeStr == "7.5" || codeStr == "r7.5")
+            code = 75;
+        else
+            return false;
+    }
+
+    UINT64 period = strtoull(colon + 1, &end, 10);
+    if (*end != '\0' || period == 0) {
+        return false;
+    }
+
+    timer->code = code;
+    timer->periodCycles = period;
+    timer->nextTriggerCycle = period;
     return true;
 }
 
@@ -442,6 +498,7 @@ int main(int argc, char *argv[]) {
                                        {"max-steps", required_argument, nullptr, 'n'},
                                        {"stop-at", required_argument, nullptr, 's'},
                                        {"irq", required_argument, nullptr, 'i'},
+                                       {"timer", required_argument, nullptr, 'R'},
                                        {"output", required_argument, nullptr, 'o'},
                                        {"dump", required_argument, nullptr, 'd'},
                                        {"cov", required_argument, nullptr, 'C'},
@@ -452,6 +509,7 @@ int main(int argc, char *argv[]) {
                                        {"tracepoint-file", required_argument, nullptr, 'T'},
                                        {"tracepoint-max", required_argument, nullptr, 'M'},
                                        {"tracepoint-stop", no_argument, nullptr, 'P'},
+                                       {"gdb", required_argument, nullptr, 'G'},
                                        {"quiet", no_argument, nullptr, 'q'},
                                        {"summary", no_argument, nullptr, 'S'},
                                        {"help", no_argument, nullptr, 'h'},
@@ -498,6 +556,15 @@ int main(int argc, char *argv[]) {
                 return 1;
             }
             cfg.irqs.push_back(irq);
+            break;
+        }
+        case 'R': {
+            PeriodicTimer timer;
+            if (!ParseTimer(optarg, &timer)) {
+                fprintf(stderr, "Error: Invalid timer spec '%s' (use CODE:PERIOD, e.g., 65:30720)\n", optarg);
+                return 1;
+            }
+            cfg.timers.push_back(timer);
             break;
         }
         case 'o':
@@ -558,6 +625,16 @@ int main(int argc, char *argv[]) {
         case 'P':
             cfg.tracepointStop = true;
             break;
+        case 'G': {
+            char *end = nullptr;
+            long port = strtol(optarg, &end, 10);
+            if (*end != '\0' || port <= 0 || port > 65535) {
+                fprintf(stderr, "Error: Invalid GDB port '%s'\n", optarg);
+                return 1;
+            }
+            cfg.gdbPort = (int)port;
+            break;
+        }
         case 'q':
             cfg.quiet = true;
             break;
@@ -610,6 +687,14 @@ int main(int argc, char *argv[]) {
     }
     gIoTrace = cfg.ioTrace;
 
+    // GDB mode: start RSP server instead of normal execution
+    if (cfg.gdbPort > 0) {
+        ExecutionStats8085 stats = {0};
+        int rc = gdb_main(cfg.gdbPort, state, &stats, cfg.timers);
+        Free8085(state);
+        return rc;
+    }
+
     FILE *out = stdout;
     if (cfg.outputFile) {
         out = fopen(cfg.outputFile, "w");
@@ -637,6 +722,12 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "  IRQs:");
             for (const auto &irq : cfg.irqs)
                 fprintf(stderr, " %d@%" PRIu64, irq.code, irq.atStep);
+            fprintf(stderr, "\n");
+        }
+        if (!cfg.timers.empty()) {
+            fprintf(stderr, "  Timers:");
+            for (const auto &t : cfg.timers)
+                fprintf(stderr, " RST%d.%d every %" PRIu64 " T-states", t.code / 10, t.code % 10, t.periodCycles);
             fprintf(stderr, "\n");
         }
         if (!cfg.tracepoints.empty()) {
@@ -741,8 +832,21 @@ int main(int argc, char *argv[]) {
         lastPC = pc;
 
         halted = Emulate8085Op(state, &stats);
+
+        // Check periodic timers against the T-state counter
+        for (auto &t : cfg.timers) {
+            if (stats.total_tstates >= t.nextTriggerCycle) {
+                triggerInterrupt(state, t.code, 1);
+                if (!cfg.quiet && !cfg.summary) {
+                    fprintf(stderr, "[Clk %" PRIu64 "] Timer fired: RST %d.%d\n", stats.total_tstates, t.code / 10,
+                            t.code % 10);
+                }
+                t.nextTriggerCycle += t.periodCycles;
+            }
+        }
+
         bool stop = false;
-        if (halted && !HasFutureIRQ(cfg, nextIRQ)) {
+        if (halted && !HasFutureIRQ(cfg, nextIRQ) && cfg.timers.empty()) {
             haltReason = "hlt";
             stop = true;
         }
