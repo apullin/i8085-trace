@@ -147,6 +147,7 @@ bool checkInterrupts(State8085 *state) {
 }
 
 extern void io_write(int address, int value);
+extern void io_pre_read(int address);
 extern void io_read(int address, int value);
 
 int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
@@ -1310,6 +1311,7 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         }
         break;
     case 0xdb: // IN d8
+        io_pre_read(opcode[1]);
         state->a = state->io[opcode[1]];
         state->pc++;
         states = 10;

@@ -41,6 +41,7 @@ Execution Options:
   -s, --stop-at=ADDR    Stop at address (hex, can repeat)
   --irq=CODE@STEP       Trigger interrupt at step (can repeat)
   --timer=CODE:PERIOD   Periodic interrupt every PERIOD T-states (can repeat)
+  --no-loop-detect      Disable infinite loop detection
 
 Output Options:
   -o, --output=FILE     Output file (default: stdout)
@@ -48,6 +49,8 @@ Output Options:
   -S, --summary         Output only final state as JSON (no per-step trace)
   -d, --dump=START:LEN  Dump memory range at exit (hex, can repeat)
   --cov=FILE            Write coverage JSON (pc/opcode hit counts)
+  --io-plugin=PATH      Load runtime I/O plugin shared library
+  --io-plugin-config=S  Opaque config string passed to plugin init
 
 Tracepoint Options (require -S):
   -t, --tracepoint=ADDR       Trace only this address (hex, can repeat)
@@ -139,6 +142,28 @@ Multiple dump ranges can be specified by repeating the `-d` option.
 The `--cov=FILE` option writes a JSON summary of executed PC and opcode hit
 counts. This is intended for test harnesses to validate instruction coverage.
 
+## Runtime I/O Plugins
+
+`i8085-trace` can load a runtime I/O plugin for machine-specific behavior:
+
+- `--io-plugin=/path/to/plugin.so`
+- `--io-plugin-config='opaque config string'`
+
+The core tracer remains CPU-focused; board/peripheral behavior lives in a
+separate shared library loaded at runtime.
+
+Plugin entrypoint ABI (`extern "C"`):
+
+```c
+int i8085_io_plugin_init(const char *config,
+                         void **out_ctx,
+                         I8085IoPluginAPI *out_api,
+                         char *errbuf,
+                         size_t errbuf_len);
+```
+
+See `include/i8085_io_plugin.h` for the complete callback API.
+
 ## Interrupt Simulation
 
 The `--irq=CODE@STEP` option triggers an interrupt at a specific instruction step:
@@ -169,7 +194,7 @@ The `clk` field is a rough cycle count based on per-opcode timings. It does not 
 
 ## Limitations
 
-- I/O ports are modeled as a 256-byte array; `OUT` is a no-op hook by default.
+- I/O ports are modeled as a 256-byte array; external behavior requires a plugin.
 - No memory-mapped peripherals; memory is a flat 64K RAM image.
 - Cycle counts are approximate (per-opcode base timings only).
 

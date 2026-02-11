@@ -15,6 +15,7 @@
 
 #include "gdb_stub.hpp"
 #include "i8085_cpu.h"
+#include "i8085_io_runtime.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -403,6 +404,7 @@ int gdb_main(int port, State8085 *state, ExecutionStats8085 *stats, std::vector<
 
     std::set<UINT16> breakpoints;
     bool running = true;
+    UINT64 gdbStep = 0;
 
     while (running) {
         std::string pkt = recv_packet(clientFd);
@@ -552,7 +554,9 @@ int gdb_main(int port, State8085 *state, ExecutionStats8085 *stats, std::vector<
                 state->pc = (UINT16)parse_hex(pkt.c_str() + 1, nullptr);
 
             fire_timers(state, stats, timers);
+            io_runtime_on_step(gdbStep, stats->total_tstates);
             Emulate8085Op(state, stats);
+            gdbStep++;
             fire_timers(state, stats, timers);
 
             reply = "S05";
@@ -565,13 +569,19 @@ int gdb_main(int port, State8085 *state, ExecutionStats8085 *stats, std::vector<
             // Step once past current PC if it's a breakpoint
             if (breakpoints.count(state->pc)) {
                 fire_timers(state, stats, timers);
+                io_runtime_on_step(gdbStep, stats->total_tstates);
                 Emulate8085Op(state, stats);
+                gdbStep++;
+                fire_timers(state, stats, timers);
             }
 
             int pollCounter = 0;
             for (;;) {
                 fire_timers(state, stats, timers);
+                io_runtime_on_step(gdbStep, stats->total_tstates);
                 int halted = Emulate8085Op(state, stats);
+                gdbStep++;
+                fire_timers(state, stats, timers);
 
                 if (breakpoints.count(state->pc)) {
                     reply = "S05";

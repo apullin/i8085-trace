@@ -70,8 +70,10 @@ int triggerInterrupt(State8085 *state, int code, int active);
 void setSIDLine(State8085 *state, int level);
 int getSODLine(State8085 *state);
 
-// Optional I/O hook for OUT instruction
+// Optional I/O hooks for I/O instructions
 void io_write(int address, int value);
+void io_pre_read(int address);
+void io_read(int address, int value);
 
 #ifdef __cplusplus
 }
