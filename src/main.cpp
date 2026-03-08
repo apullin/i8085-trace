@@ -6,6 +6,7 @@
 
 #include "i8085_cpu.h"
 #include "gdb_stub.hpp"
+#include "i8085_io_runtime.h"
 #include <algorithm>
 #include <cctype>
 #include <cinttypes>
@@ -54,6 +55,7 @@ struct Config {
     UINT16 entryAddr = 0x0000;
     UINT16 spAddr = 0xFFFF;
     UINT64 maxSteps = 1000000;
+    bool loopDetect = true;
     std::vector<UINT16> stopAddrs;
     std::vector<ScheduledIRQ> irqs;
     std::vector<PeriodicTimer> timers;
@@ -62,6 +64,8 @@ struct Config {
     UINT64 tracepointMax = 0;
     bool tracepointStop = false;
     std::vector<IOInit> ioInit;
+    const char *ioPluginPath = nullptr;
+    const char *ioPluginConfig = nullptr;
     bool ioTrace = false;
     int sidInit = -1;
     int gdbPort = 0;
@@ -87,6 +91,7 @@ static void PrintUsage(const char *prog) {
     fprintf(stderr, "  -s, --stop-at=ADDR    Stop at address (hex, can repeat)\n");
     fprintf(stderr, "  --irq=CODE@STEP       Trigger interrupt at step (can repeat)\n");
     fprintf(stderr, "  --timer=CODE:PERIOD   Periodic interrupt every PERIOD T-states (can repeat)\n");
+    fprintf(stderr, "  --no-loop-detect      Disable infinite loop detection\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Output Options:\n");
     fprintf(stderr, "  -o, --output=FILE     Output file (default: stdout)\n");
@@ -95,6 +100,8 @@ static void PrintUsage(const char *prog) {
     fprintf(stderr, "  -d, --dump=START:LEN  Dump memory range at exit (hex, can repeat)\n");
     fprintf(stderr, "  --cov=FILE            Write coverage JSON (pc/opcode hit counts)\n");
     fprintf(stderr, "  --io=PORT:VAL         Initialize I/O port value (hex, can repeat)\n");
+    fprintf(stderr, "  --io-plugin=PATH      Load runtime I/O plugin shared library\n");
+    fprintf(stderr, "  --io-plugin-config=S  Opaque config string passed to plugin init\n");
     fprintf(stderr, "  --io-trace            Log IN/OUT operations to stderr\n");
     fprintf(stderr, "  --sid=LEVEL           Set SID input line (0 or 1)\n");
     fprintf(stderr, "\n");
@@ -468,24 +475,6 @@ static bool HasFutureIRQ(const Config &cfg, size_t nextIRQ) {
 }
 
 //----------------------------------------------------------------------------
-// I/O hook (stub)
-//----------------------------------------------------------------------------
-
-static bool gIoTrace = false;
-
-extern "C" void io_write(int address, int value) {
-    if (gIoTrace) {
-        fprintf(stderr, "[IO] OUT 0x%02X = 0x%02X\n", address & 0xFF, value & 0xFF);
-    }
-}
-
-extern "C" void io_read(int address, int value) {
-    if (gIoTrace) {
-        fprintf(stderr, "[IO] IN  0x%02X -> 0x%02X\n", address & 0xFF, value & 0xFF);
-    }
-}
-
-//----------------------------------------------------------------------------
 // Main
 //----------------------------------------------------------------------------
 
@@ -499,10 +488,13 @@ int main(int argc, char *argv[]) {
                                        {"stop-at", required_argument, nullptr, 's'},
                                        {"irq", required_argument, nullptr, 'i'},
                                        {"timer", required_argument, nullptr, 'R'},
+                                       {"no-loop-detect", no_argument, nullptr, 1000},
                                        {"output", required_argument, nullptr, 'o'},
                                        {"dump", required_argument, nullptr, 'd'},
                                        {"cov", required_argument, nullptr, 'C'},
                                        {"io", required_argument, nullptr, 'I'},
+                                       {"io-plugin", required_argument, nullptr, 1001},
+                                       {"io-plugin-config", required_argument, nullptr, 1002},
                                        {"io-trace", no_argument, nullptr, 'O'},
                                        {"sid", required_argument, nullptr, 'y'},
                                        {"tracepoint", required_argument, nullptr, 't'},
@@ -567,6 +559,9 @@ int main(int argc, char *argv[]) {
             cfg.timers.push_back(timer);
             break;
         }
+        case 1000:
+            cfg.loopDetect = false;
+            break;
         case 'o':
             cfg.outputFile = optarg;
             break;
@@ -591,6 +586,12 @@ int main(int argc, char *argv[]) {
             cfg.ioInit.push_back(io);
             break;
         }
+        case 1001:
+            cfg.ioPluginPath = optarg;
+            break;
+        case 1002:
+            cfg.ioPluginConfig = optarg;
+            break;
         case 'O':
             cfg.ioTrace = true;
             break;
@@ -674,23 +675,37 @@ int main(int argc, char *argv[]) {
     memset(state->io, 0, 0x100);
 
     if (!LoadBinary(state, cfg.inputFile, cfg.loadAddr)) {
+        io_runtime_unload_plugin();
         Free8085(state);
         return 1;
     }
 
     Reset8085(state, cfg.entryAddr, cfg.spAddr);
+    io_runtime_set_trace(cfg.ioTrace ? 1 : 0);
+    io_runtime_set_state(state);
+    if (cfg.ioPluginPath) {
+        char err[512] = {0};
+        if (io_runtime_load_plugin(cfg.ioPluginPath, cfg.ioPluginConfig, err, sizeof(err)) != 0) {
+            fprintf(stderr, "Error: Failed to load I/O plugin '%s': %s\n", cfg.ioPluginPath,
+                    (err[0] != '\0') ? err : "unknown error");
+            io_runtime_unload_plugin();
+            Free8085(state);
+            return 1;
+        }
+    }
+    io_runtime_on_reset();
     for (const auto &io : cfg.ioInit) {
         state->io[io.port] = io.value;
     }
     if (cfg.sidInit >= 0) {
         setSIDLine(state, cfg.sidInit);
     }
-    gIoTrace = cfg.ioTrace;
 
     // GDB mode: start RSP server instead of normal execution
     if (cfg.gdbPort > 0) {
         ExecutionStats8085 stats = {0};
         int rc = gdb_main(cfg.gdbPort, state, &stats, cfg.timers);
+        io_runtime_unload_plugin();
         Free8085(state);
         return rc;
     }
@@ -700,6 +715,7 @@ int main(int argc, char *argv[]) {
         out = fopen(cfg.outputFile, "w");
         if (!out) {
             fprintf(stderr, "Error: Cannot open output file '%s'\n", cfg.outputFile);
+            io_runtime_unload_plugin();
             Free8085(state);
             return 1;
         }
@@ -712,6 +728,9 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "  Entry:  0x%04X\n", cfg.entryAddr);
         fprintf(stderr, "  SP:     0x%04X\n", cfg.spAddr);
         fprintf(stderr, "  Max:    %" PRIu64 " steps\n", cfg.maxSteps);
+        if (cfg.ioPluginPath) {
+            fprintf(stderr, "  I/O plugin: %s\n", cfg.ioPluginPath);
+        }
         if (!cfg.stopAddrs.empty()) {
             fprintf(stderr, "  Stop:");
             for (UINT16 addr : cfg.stopAddrs)
@@ -747,6 +766,7 @@ int main(int argc, char *argv[]) {
     char mnemonicBuf[16];
     UINT64 step = 0;
     UINT16 lastPC = 0xFFFF;
+    UINT16 lastSP = 0xFFFF;
     size_t nextIRQ = 0;
     bool halted = false;
     const char *haltReason = "max";
@@ -823,19 +843,23 @@ int main(int argc, char *argv[]) {
             break;
         }
 
-        if (!halted && pc == lastPC) {
+        const bool pendingIrq = (state->pending_trap || state->pending_r5 || state->pending_r6 || state->r7_latch);
+        if (cfg.loopDetect && !halted && pc == lastPC && sp == lastSP && !pendingIrq && !HasFutureIRQ(cfg, nextIRQ) &&
+            cfg.timers.empty()) {
             if (!cfg.quiet && !cfg.summary)
                 fprintf(stderr, "Infinite loop detected at 0x%04X\n", pc);
             haltReason = "loop";
             break;
         }
         lastPC = pc;
+        lastSP = sp;
 
+        io_runtime_on_step(step, stats.total_tstates);
         halted = Emulate8085Op(state, &stats);
 
         // Check periodic timers against the T-state counter
         for (auto &t : cfg.timers) {
-            if (stats.total_tstates >= t.nextTriggerCycle) {
+            while (stats.total_tstates >= t.nextTriggerCycle) {
                 triggerInterrupt(state, t.code, 1);
                 if (!cfg.quiet && !cfg.summary) {
                     fprintf(stderr, "[Clk %" PRIu64 "] Timer fired: RST %d.%d\n", stats.total_tstates, t.code / 10,
@@ -909,6 +933,7 @@ int main(int argc, char *argv[]) {
     if (cfg.outputFile)
         fclose(out);
 
+    io_runtime_unload_plugin();
     Free8085(state);
     return 0;
 }
