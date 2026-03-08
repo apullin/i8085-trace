@@ -70,7 +70,7 @@ int Disassemble8085Op(const UINT8 *codebuffer, int pc, char *out, size_t out_len
         printf("RLC");
         break;
     case 0x08:
-        printf("NOP");
+        printf("DSUB");
         break;
     case 0x09:
         printf("DAD    B");
@@ -96,7 +96,7 @@ int Disassemble8085Op(const UINT8 *codebuffer, int pc, char *out, size_t out_len
         break;
 
     case 0x10:
-        printf("NOP");
+        printf("ARHL");
         break;
     case 0x11:
         printf("LXI    D,#$%02x%02x", code[2], code[1]);
@@ -122,7 +122,7 @@ int Disassemble8085Op(const UINT8 *codebuffer, int pc, char *out, size_t out_len
         printf("RAL");
         break;
     case 0x18:
-        printf("NOP");
+        printf("RDEL");
         break;
     case 0x19:
         printf("DAD    D");
@@ -175,7 +175,8 @@ int Disassemble8085Op(const UINT8 *codebuffer, int pc, char *out, size_t out_len
         printf("DAA");
         break;
     case 0x28:
-        printf("NOP");
+        printf("LDHI   #$%02x", code[1]);
+        opbytes = 2;
         break;
     case 0x29:
         printf("DAD    H");
@@ -228,7 +229,8 @@ int Disassemble8085Op(const UINT8 *codebuffer, int pc, char *out, size_t out_len
         printf("STC");
         break;
     case 0x38:
-        printf("NOP");
+        printf("LDSI   #$%02x", code[1]);
+        opbytes = 2;
         break;
     case 0x39:
         printf("DAD    SP");
@@ -685,8 +687,7 @@ int Disassemble8085Op(const UINT8 *codebuffer, int pc, char *out, size_t out_len
         opbytes = 3;
         break;
     case 0xcb:
-        printf("JMP    $%02x%02x", code[2], code[1]);
-        opbytes = 3;
+        printf("RSTV");
         break;
     case 0xcc:
         printf("CZ     $%02x%02x", code[2], code[1]);
@@ -736,7 +737,7 @@ int Disassemble8085Op(const UINT8 *codebuffer, int pc, char *out, size_t out_len
         printf("RC");
         break;
     case 0xd9:
-        printf("RETI");
+        printf("SHLX");
         break;
     case 0xda:
         printf("JC     $%02x%02x", code[2], code[1]);
@@ -751,7 +752,7 @@ int Disassemble8085Op(const UINT8 *codebuffer, int pc, char *out, size_t out_len
         opbytes = 3;
         break;
     case 0xdd:
-        printf("CALL   $%02x%02x", code[2], code[1]);
+        printf("JNX5   $%02x%02x", code[2], code[1]);
         opbytes = 3;
         break;
     case 0xde:
@@ -807,8 +808,7 @@ int Disassemble8085Op(const UINT8 *codebuffer, int pc, char *out, size_t out_len
         opbytes = 3;
         break;
     case 0xed:
-        printf("CALL   $%02x%02x", code[2], code[1]);
-        opbytes = 3;
+        printf("LHLX");
         break;
     case 0xee:
         printf("XRI    #$%02x", code[1]);
@@ -863,7 +863,7 @@ int Disassemble8085Op(const UINT8 *codebuffer, int pc, char *out, size_t out_len
         opbytes = 3;
         break;
     case 0xfd:
-        printf("CALL   $%02x%02x", code[2], code[1]);
+        printf("JX5    $%02x%02x", code[2], code[1]);
         opbytes = 3;
         break;
     case 0xfe:

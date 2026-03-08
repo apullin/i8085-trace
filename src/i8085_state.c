@@ -62,6 +62,12 @@ int getSODLine(State8085 *state) {
 
 int triggerInterrupt(State8085 *state, int code, int active) {
     switch (code) {
+    case 0: case 1: case 2: case 3:
+    case 4: case 5: case 6: case 7:
+        // 8080-style INT: external device places RST N on data bus
+        state->pending_int = active;
+        state->int_rst_number = (UINT8)code;
+        break;
     case 45:
         state->pending_trap = active;
         break;

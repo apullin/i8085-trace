@@ -117,7 +117,7 @@ static void PrintUsage(const char *prog) {
     fprintf(stderr, "Other:\n");
     fprintf(stderr, "  -h, --help            Show this help\n");
     fprintf(stderr, "\n");
-    fprintf(stderr, "Interrupt codes: 45 (TRAP/RST 4.5), 55 (RST 5.5), 65 (RST 6.5), 75 (RST 7.5)\n");
+    fprintf(stderr, "Interrupt codes: 0-7 (8080 RST 0-7), 45 (TRAP), 55 (RST 5.5), 65 (RST 6.5), 75 (RST 7.5)\n");
 }
 
 //----------------------------------------------------------------------------
@@ -153,8 +153,10 @@ static bool ParseIRQ(const char *str, ScheduledIRQ *irq) {
     char *end = nullptr;
     long numeric = strtol(codeStr.c_str(), &end, 10);
     if (end && *end == '\0') {
-        if (numeric == 45 || numeric == 55 || numeric == 65 || numeric == 75) {
-            code = (int)numeric;
+        if (numeric >= 0 && numeric <= 7) {
+            code = (int)numeric;  // 8080-style RST 0-7
+        } else if (numeric == 45 || numeric == 55 || numeric == 65 || numeric == 75) {
+            code = (int)numeric;  // 8085-style RST X.5 / TRAP
         } else {
             return false;
         }
@@ -199,8 +201,10 @@ static bool ParseTimer(const char *str, PeriodicTimer *timer) {
     char *end = nullptr;
     long numeric = strtol(codeStr.c_str(), &end, 10);
     if (end && *end == '\0') {
-        if (numeric == 45 || numeric == 55 || numeric == 65 || numeric == 75) {
-            code = (int)numeric;
+        if (numeric >= 0 && numeric <= 7) {
+            code = (int)numeric;  // 8080-style RST 0-7
+        } else if (numeric == 45 || numeric == 55 || numeric == 65 || numeric == 75) {
+            code = (int)numeric;  // 8085-style RST X.5 / TRAP
         } else {
             return false;
         }
@@ -862,8 +866,11 @@ int main(int argc, char *argv[]) {
             while (stats.total_tstates >= t.nextTriggerCycle) {
                 triggerInterrupt(state, t.code, 1);
                 if (!cfg.quiet && !cfg.summary) {
-                    fprintf(stderr, "[Clk %" PRIu64 "] Timer fired: RST %d.%d\n", stats.total_tstates, t.code / 10,
-                            t.code % 10);
+                    if (t.code <= 7)
+                        fprintf(stderr, "[Clk %" PRIu64 "] Timer fired: RST %d\n", stats.total_tstates, t.code);
+                    else
+                        fprintf(stderr, "[Clk %" PRIu64 "] Timer fired: RST %d.%d\n", stats.total_tstates, t.code / 10,
+                                t.code % 10);
                 }
                 t.nextTriggerCycle += t.periodCycles;
             }

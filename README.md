@@ -66,6 +66,7 @@ Other:
 ```
 
 Interrupt codes:
+- `0`–`7` (8080-style RST 0–7)
 - `45` (TRAP / RST 4.5)
 - `55` (RST 5.5)
 - `65` (RST 6.5)
@@ -167,6 +168,7 @@ See `include/i8085_io_plugin.h` for the complete callback API.
 ## Interrupt Simulation
 
 The `--irq=CODE@STEP` option triggers an interrupt at a specific instruction step:
+- `0`–`7` (8080-style RST 0–7) vectors 0x0000–0x0038
 - `45` (TRAP / RST 4.5) vector 0x0024
 - `55` (RST 5.5) vector 0x002C
 - `65` (RST 6.5) vector 0x0034
@@ -191,6 +193,27 @@ The simulator stops when:
 ## Cycle Timing (Rough Estimate)
 
 The `clk` field is a rough cycle count based on per-opcode timings. It does not include external wait states or accurate memory access timing.
+
+## Undocumented 8085 Instructions
+
+The simulator supports the undocumented 8085 opcodes, including the V
+(overflow) and X5 flag bits. These are always available — no feature flag
+required.
+
+| Opcode | Mnemonic | Description |
+|--------|----------|-------------|
+| 0x08 | DSUB | HL = HL − BC, full flags |
+| 0x10 | ARHL | Arithmetic right shift HL, CY = L\[0\] |
+| 0x18 | RDEL | Rotate DE left through carry, V flag |
+| 0x28 | LDHI imm8 | DE = HL + imm8 |
+| 0x38 | LDSI imm8 | DE = SP + imm8 |
+| 0xCB | RSTV | RST 0x40 if V set, else NOP |
+| 0xD9 | SHLX | \[DE\] ← HL |
+| 0xDD | JNX5 addr | Jump if X5 = 0 |
+| 0xED | LHLX | HL ← \[DE\] |
+| 0xFD | JX5 addr | Jump if X5 = 1 |
+
+Reference: [Dehnadi & Mercer, "The Undocumented 8085 Opcodes"](http://www.righto.com/2013/02/looking-at-silicon-to-understand.html)
 
 ## Limitations
 

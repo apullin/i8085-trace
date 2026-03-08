@@ -15,7 +15,9 @@ typedef struct Flags {
     UINT8 p : 1;
     UINT8 cy : 1;
     UINT8 ac : 1;
-    UINT8 pad : 3;
+    UINT8 v : 1;     // Overflow flag (undocumented, PSW bit 1)
+    UINT8 x5 : 1;    // X5 flag (undocumented, PSW bit 5)
+    UINT8 pad : 1;
 } Flags;
 
 // CPU state
@@ -34,6 +36,8 @@ typedef struct State8085 {
     UINT8 int_enable_delay;
     UINT8 r5_mask, r6_mask, r7_mask;
     UINT8 pending_trap, pending_r5, pending_r6, r7_latch;
+    UINT8 pending_int;      // 8080-style INT pending (RST 0-7)
+    UINT8 int_rst_number;   // Which RST to execute (0-7) when pending_int fires
     UINT8 sid_line;
     UINT8 sod_line;
     UINT8 hlt_enable;

@@ -62,6 +62,8 @@ void InvalidInstruction(State8085 *state) {
 uint8_t addByte(State8085 *state, uint8_t lhs, uint8_t rhs, should_preserve_carry preserveCarry) {
     uint16_t res = lhs + rhs;
     state->cc.ac = (lhs & 0xf) + (rhs & 0xf) > 0xf;
+    // V: overflow when both operands same sign but result differs
+    state->cc.v = ((lhs ^ rhs ^ 0x80) & (lhs ^ (uint8_t)res) & 0x80) >> 7;
     ArithFlagsA(state, res, preserveCarry);
     return (uint8_t)res;
 }
@@ -70,6 +72,7 @@ uint8_t addByteWithCarry(State8085 *state, uint8_t lhs, uint8_t rhs, should_pres
     uint8_t carry = state->cc.cy ? 1 : 0;
     uint16_t res = lhs + rhs + carry;
     state->cc.ac = (lhs & 0xf) + (rhs & 0xf) + carry > 0xf;
+    state->cc.v = ((lhs ^ rhs ^ 0x80) & (lhs ^ (uint8_t)res) & 0x80) >> 7;
     ArithFlagsA(state, res, preserveCarry);
     return (uint8_t)res;
 }
@@ -77,6 +80,8 @@ uint8_t addByteWithCarry(State8085 *state, uint8_t lhs, uint8_t rhs, should_pres
 uint8_t subtractByte(State8085 *state, uint8_t lhs, uint8_t rhs, should_preserve_carry preserveCarry) {
     uint16_t res = lhs - rhs;
     state->cc.ac = (lhs & 0x0f) < (rhs & 0x0f);
+    // V: overflow when operands differ in sign and result sign != lhs sign
+    state->cc.v = ((lhs ^ rhs) & (lhs ^ (uint8_t)res) & 0x80) >> 7;
     ArithFlagsA(state, res, preserveCarry);
     return (uint8_t)res;
 }
@@ -85,6 +90,7 @@ uint8_t subtractByteWithBorrow(State8085 *state, uint8_t lhs, uint8_t rhs, shoul
     uint8_t carry = state->cc.cy ? 1 : 0;
     uint16_t res = lhs - rhs - carry;
     state->cc.ac = (lhs & 0x0f) < ((rhs & 0x0f) + carry);
+    state->cc.v = ((lhs ^ rhs) & (lhs ^ (uint8_t)res) & 0x80) >> 7;
     ArithFlagsA(state, res, preserveCarry);
     return (uint8_t)res;
 }
@@ -143,6 +149,15 @@ bool checkInterrupts(State8085 *state) {
         return true;
     }
 
+    // 8080-style INT: external device places RST N on data bus
+    if (state->pending_int) {
+        UINT8 n = state->int_rst_number;
+        state->pending_int = 0;
+        state->int_enable = 0;
+        rst(state, n, 0); // RST N = N*8 (not half-step)
+        return true;
+    }
+
     return false;
 }
 
@@ -184,6 +199,7 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         state->c++;
         if (state->c == 0)
             state->b++;
+        state->cc.x5 = (state->b == 0 && state->c == 0);  // FFFF→0000
         states = 6;
         break;
     case 0x04: // INR B
@@ -206,9 +222,27 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         state->cc.cy = (1 == ((x & 0x80) >> 7));
         states = 4;
     } break;
-    case 0x08:
-        InvalidInstruction(state);
-        break;
+    case 0x08: // DSUB (undocumented): HL = HL - BC, all flags
+    {
+        uint16_t hl = (state->h << 8) | state->l;
+        uint16_t bc = (state->b << 8) | state->c;
+        uint32_t result = (uint32_t)hl - (uint32_t)bc;
+        // V flag: 2's complement overflow
+        // Overflow when signs of operands differ and result sign != HL sign
+        uint8_t sign_hl = (hl >> 15) & 1;
+        uint8_t sign_bc = (bc >> 15) & 1;
+        uint8_t sign_res = (result >> 15) & 1;
+        state->cc.v = (sign_hl != sign_bc) && (sign_res != sign_hl);
+        // Standard flags
+        state->cc.cy = (result >> 16) & 1;  // Borrow
+        state->cc.z = ((result & 0xffff) == 0);
+        state->cc.s = sign_res;
+        state->cc.p = parity(result & 0xff, 8);
+        state->cc.ac = (hl & 0x0f) < (bc & 0x0f);  // Nibble borrow
+        state->h = (result >> 8) & 0xff;
+        state->l = result & 0xff;
+        states = 10;
+    } break;
     case 0x09: // DAD B
     {
         uint32_t hl = (state->h << 8) | state->l;
@@ -229,6 +263,7 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         state->c--;
         if (state->c == 0xFF)
             state->b--;
+        state->cc.x5 = (state->b == 0xFF && state->c == 0xFF);  // 0000→FFFF
         states = 6;
         break;
     case 0x0c: // INR C
@@ -252,9 +287,15 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         state->cc.cy = (1 == (x & 1));
         states = 4;
     } break;
-    case 0x10:
-        InvalidInstruction(state);
-        break;
+    case 0x10: // ARHL (undocumented): Arithmetic right shift HL, CY=L[0]
+    {
+        uint16_t hl = (state->h << 8) | state->l;
+        state->cc.cy = hl & 1;
+        hl = (uint16_t)((int16_t)hl >> 1);  // Arithmetic shift preserves sign
+        state->h = (hl >> 8) & 0xff;
+        state->l = hl & 0xff;
+        states = 7;
+    } break;
     case 0x11: // LXI	D,word
         state->e = opcode[1];
         state->d = opcode[2];
@@ -268,6 +309,7 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         state->e++;
         if (state->e == 0)
             state->d++;
+        state->cc.x5 = (state->d == 0 && state->e == 0);  // FFFF→0000
         states = 6;
         break;
     case 0x14: // INR D
@@ -290,9 +332,18 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         state->cc.cy = (1 == ((x & 0x80) >> 7));
         states = 4;
     } break;
-    case 0x18:
-        InvalidInstruction(state);
-        break;
+    case 0x18: // RDEL (undocumented): Rotate DE left through carry
+    {
+        uint16_t de = (state->d << 8) | state->e;
+        uint8_t old_cy = state->cc.cy;
+        state->cc.cy = (de >> 15) & 1;  // D7 goes to carry
+        de = (de << 1) | old_cy;        // Old carry goes to E0
+        // V flag: overflow if sign changed
+        state->cc.v = state->cc.cy ^ ((de >> 15) & 1);
+        state->d = (de >> 8) & 0xff;
+        state->e = de & 0xff;
+        states = 10;
+    } break;
     case 0x19: // DAD D
     {
         uint32_t hl = (state->h << 8) | state->l;
@@ -313,6 +364,7 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         state->e--;
         if (state->e == 0xFF)
             state->d--;
+        state->cc.x5 = (state->d == 0xFF && state->e == 0xFF);  // 0000→FFFF
         states = 6;
         break;
     case 0x1c: // INR E
@@ -368,6 +420,7 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         state->l++;
         if (state->l == 0)
             state->h++;
+        state->cc.x5 = (state->h == 0 && state->l == 0);  // FFFF→0000
         states = 6;
         break;
     case 0x24: // INR H
@@ -408,9 +461,15 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         state->cc.p = parity(state->a, 8);
         states = 4;
     } break;
-    case 0x28:
-        InvalidInstruction(state);
-        break;
+    case 0x28: // LDHI (undocumented): DE = HL + imm8, no flags
+    {
+        uint16_t hl = (state->h << 8) | state->l;
+        uint16_t result = hl + opcode[1];
+        state->d = (result >> 8) & 0xff;
+        state->e = result & 0xff;
+        state->pc++;
+        states = 10;
+    } break;
     case 0x29: // DAD H
     {
         uint32_t hl = (state->h << 8) | state->l;
@@ -435,6 +494,7 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         state->l--;
         if (state->l == 0xFF)
             state->h--;
+        state->cc.x5 = (state->h == 0xFF && state->l == 0xFF);  // 0000→FFFF
         states = 6;
         break;
     case 0x2c: // INR L
@@ -495,6 +555,7 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
     } break;
     case 0x33: // INX SP
         state->sp++;
+        state->cc.x5 = (state->sp == 0);  // FFFF→0000
         states = 6;
         break;
     case 0x34: // INR M
@@ -521,9 +582,14 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         state->cc.cy = 1;
         states = 4;
         break; // STC
-    case 0x38:
-        InvalidInstruction(state);
-        break;
+    case 0x38: // LDSI (undocumented): DE = SP + imm8, no flags
+    {
+        uint16_t result = state->sp + opcode[1];
+        state->d = (result >> 8) & 0xff;
+        state->e = result & 0xff;
+        state->pc++;
+        states = 10;
+    } break;
     case 0x39: // DAD SP
     {
         uint16_t hl = (state->h << 8) | state->l;
@@ -544,6 +610,7 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
     } break;
     case 0x3b: // DCX SP
         state->sp--;
+        state->cc.x5 = (state->sp == 0xFFFF);  // 0000→FFFF
         states = 6;
         break;
     case 0x3c: // INR A
@@ -1211,8 +1278,14 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
             states = 7;
         }
         break;
-    case 0xcb:
-        InvalidInstruction(state);
+    case 0xcb: // RSTV (undocumented): RST 0x40 if V flag set, else NOP
+        if (state->cc.v) {
+            rst(state, 0, 0);   // Push PC, but we override target
+            state->pc = 0x0040; // Override RST 0 target to 0x40
+            states = 12;
+        } else {
+            states = 6;
+        }
         break;
     case 0xcc: // CZ Addr
         if (1 == state->cc.z) {
@@ -1297,10 +1370,13 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
             returnToCaller(state);
         }
         break;
-    case 0xd9:
-        returnToCaller(state);
+    case 0xd9: // SHLX (undocumented): [DE] = L, [DE+1] = H
+    {
+        uint16_t de = (state->d << 8) | state->e;
+        state->memory[de] = state->l;
+        state->memory[de + 1] = state->h;
         states = 10;
-        break;
+    } break;
     case 0xda: // JC Addr
         if (1 == state->cc.cy) {
             state->pc = ((opcode[2] << 8) | opcode[1]);
@@ -1326,8 +1402,14 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
             states = 9;
         }
         break;
-    case 0xdd:
-        InvalidInstruction(state);
+    case 0xdd: // JNX5 (undocumented): Jump if not X5
+        if (0 == state->cc.x5) {
+            state->pc = ((opcode[2] << 8) | opcode[1]);
+            states = 10;
+        } else {
+            state->pc += 2;
+            states = 7;
+        }
         break;
     case 0xde: // SBI d8
         state->a = subtractByteWithBorrow(state, state->a, opcode[1], UPDATE_CARRY);
@@ -1437,9 +1519,13 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
             states = 9;
         }
         break;
-    case 0xed:
-        InvalidInstruction(state);
-        break;
+    case 0xed: // LHLX (undocumented): L = [DE], H = [DE+1]
+    {
+        uint16_t de = (state->d << 8) | state->e;
+        state->l = state->memory[de];
+        state->h = state->memory[de + 1];
+        states = 10;
+    } break;
     case 0xee: // XRI d8
         state->a = state->a ^ opcode[1];
         LogicFlagsA(state, 0);
@@ -1463,11 +1549,13 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         uint8_t psw = state->memory[state->sp];
 
         // Step 2: Extract the condition flags from the PSW byte
-        state->cc.cy = (psw & 0x01);      // Carry flag (bit 0)
-        state->cc.p = (psw & 0x04) >> 2;  // Parity flag (bit 2)
-        state->cc.ac = (psw & 0x10) >> 4; // Auxiliary carry flag (bit 4)
-        state->cc.z = (psw & 0x40) >> 6;  // Zero flag (bit 6)
-        state->cc.s = (psw & 0x80) >> 7;  // Sign flag (bit 7)
+        state->cc.cy = (psw & 0x01);       // Carry flag (bit 0)
+        state->cc.v = (psw & 0x02) >> 1;   // V overflow flag (bit 1, undocumented)
+        state->cc.p = (psw & 0x04) >> 2;   // Parity flag (bit 2)
+        state->cc.ac = (psw & 0x10) >> 4;  // Auxiliary carry flag (bit 4)
+        state->cc.x5 = (psw & 0x20) >> 5;  // X5 flag (bit 5, undocumented)
+        state->cc.z = (psw & 0x40) >> 6;   // Zero flag (bit 6)
+        state->cc.s = (psw & 0x80) >> 7;   // Sign flag (bit 7)
 
         // Step 3: Increment the stack pointer to the next memory location
         state->sp++;
@@ -1514,15 +1602,15 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         // Step 3: Decrement the stack pointer again
         state->sp--;
 
-        // Step 4: Construct the PSW byte (format: s z 0 ac 0 p 1 c)
-        uint8_t psw = (state->cc.s << 7) |  // Sign flag (bit 7)
-                      (state->cc.z << 6) |  // Zero flag (bit 6)
-                      (0 << 5) |            // Bit 5 is always 0
-                      (state->cc.ac << 4) | // Auxiliary carry (bit 4)
-                      (0 << 3) |            // Bit 3 is always 0
-                      (state->cc.p << 2) |  // Parity flag (bit 2)
-                      (1 << 1) |            // Bit 1 is always 1
-                      (state->cc.cy);       // Carry flag (bit 0)
+        // Step 4: Construct the PSW byte (format: s z x5 ac 0 p v cy)
+        uint8_t psw = (state->cc.s << 7) |   // Sign flag (bit 7)
+                      (state->cc.z << 6) |   // Zero flag (bit 6)
+                      (state->cc.x5 << 5) |  // X5 flag (bit 5, undocumented)
+                      (state->cc.ac << 4) |  // Auxiliary carry (bit 4)
+                      (0 << 3) |             // Bit 3 is always 0
+                      (state->cc.p << 2) |   // Parity flag (bit 2)
+                      (state->cc.v << 1) |   // V overflow flag (bit 1, undocumented)
+                      (state->cc.cy);        // Carry flag (bit 0)
 
         // Step 5: Store the PSW byte at the new stack pointer location
         state->memory[state->sp] = psw;
@@ -1573,8 +1661,14 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
             states = 9;
         }
         break;
-    case 0xfd:
-        InvalidInstruction(state);
+    case 0xfd: // JX5 (undocumented): Jump if X5
+        if (1 == state->cc.x5) {
+            state->pc = ((opcode[2] << 8) | opcode[1]);
+            states = 10;
+        } else {
+            state->pc += 2;
+            states = 7;
+        }
         break;
     case 0xfe: // CPI d8
     {
