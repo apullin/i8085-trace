@@ -6,6 +6,7 @@
 
 #include "i8085_io_runtime.h"
 #include "i8085_io_plugin.h"
+#include "disk_emu.h"
 
 #include <cstdio>
 #include <cstring>
@@ -118,6 +119,10 @@ extern "C" void io_write(int address, int value) {
         fprintf(stderr, "[IO] OUT 0x%02X = 0x%02X\n", port, val);
     }
 
+    if (disk_emu_active() && gRuntime.state) {
+        disk_emu_on_io_write(gRuntime.state, port, val);
+    }
+
     if (gRuntime.state && gRuntime.module && gRuntime.api.on_io_write) {
         gRuntime.api.on_io_write(gRuntime.pluginCtx, gRuntime.state, port, val);
     }
@@ -125,6 +130,11 @@ extern "C" void io_write(int address, int value) {
 
 extern "C" void io_pre_read(int address) {
     UINT8 port = (UINT8)(address & 0xFF);
+
+    if (disk_emu_active() && gRuntime.state) {
+        disk_emu_on_io_pre_read(gRuntime.state, port);
+    }
+
     if (gRuntime.state && gRuntime.module && gRuntime.api.on_io_pre_read) {
         gRuntime.api.on_io_pre_read(gRuntime.pluginCtx, gRuntime.state, port);
     }

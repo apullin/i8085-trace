@@ -7,6 +7,7 @@
 #include "i8085_cpu.h"
 #include "gdb_stub.hpp"
 #include "i8085_io_runtime.h"
+#include "disk_emu.h"
 #include <algorithm>
 #include <cctype>
 #include <cinttypes>
@@ -72,6 +73,7 @@ struct Config {
     bool quiet = false;
     bool summary = false;
     bool entrySet = false;
+    const char *diskDir = nullptr;
 };
 
 //----------------------------------------------------------------------------
@@ -103,6 +105,7 @@ static void PrintUsage(const char *prog) {
     fprintf(stderr, "  --io-plugin=PATH      Load runtime I/O plugin shared library\n");
     fprintf(stderr, "  --io-plugin-config=S  Opaque config string passed to plugin init\n");
     fprintf(stderr, "  --io-trace            Log IN/OUT operations to stderr\n");
+    fprintf(stderr, "  --disk=DIR            Enable disk emulator with files in DIR\n");
     fprintf(stderr, "  --sid=LEVEL           Set SID input line (0 or 1)\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Tracepoint Options (require -S):\n");
@@ -500,6 +503,7 @@ int main(int argc, char *argv[]) {
                                        {"io-plugin", required_argument, nullptr, 1001},
                                        {"io-plugin-config", required_argument, nullptr, 1002},
                                        {"io-trace", no_argument, nullptr, 'O'},
+                                       {"disk", required_argument, nullptr, 1003},
                                        {"sid", required_argument, nullptr, 'y'},
                                        {"tracepoint", required_argument, nullptr, 't'},
                                        {"tracepoint-file", required_argument, nullptr, 'T'},
@@ -598,6 +602,9 @@ int main(int argc, char *argv[]) {
             break;
         case 'O':
             cfg.ioTrace = true;
+            break;
+        case 1003:
+            cfg.diskDir = optarg;
             break;
         case 'y': {
             char *end = nullptr;
@@ -698,6 +705,9 @@ int main(int argc, char *argv[]) {
         }
     }
     io_runtime_on_reset();
+    if (cfg.diskDir) {
+        disk_emu_init(cfg.diskDir, cfg.ioTrace ? 1 : 0);
+    }
     for (const auto &io : cfg.ioInit) {
         state->io[io.port] = io.value;
     }
@@ -734,6 +744,9 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "  Max:    %" PRIu64 " steps\n", cfg.maxSteps);
         if (cfg.ioPluginPath) {
             fprintf(stderr, "  I/O plugin: %s\n", cfg.ioPluginPath);
+        }
+        if (cfg.diskDir) {
+            fprintf(stderr, "  Disk:     %s\n", cfg.diskDir);
         }
         if (!cfg.stopAddrs.empty()) {
             fprintf(stderr, "  Stop:");
@@ -940,6 +953,7 @@ int main(int argc, char *argv[]) {
     if (cfg.outputFile)
         fclose(out);
 
+    disk_emu_destroy();
     io_runtime_unload_plugin();
     Free8085(state);
     return 0;

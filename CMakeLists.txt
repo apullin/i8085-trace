@@ -9,6 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_executable(i8085-trace
     src/main.cpp
     src/io_runtime.cpp
+    src/disk_emu.cpp
     src/gdb_stub.cpp
     src/i8085_exec.c
     src/i8085_state.c
